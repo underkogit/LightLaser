@@ -1,4 +1,4 @@
-use image::{DynamicImage, GrayImage, Luma};
+use image::{DynamicImage, GrayImage};
 
 #[derive(Debug, Clone, Copy)]
 pub struct RasterizeOptions {
@@ -56,7 +56,9 @@ pub fn rasterize(
     let px_height = (height_mm * ppm).round().max(1.0) as u32;
 
     let resized = image.resize_exact(px_width, px_height, image::imageops::FilterType::Lanczos3);
-    let gray: GrayImage = resized.to_luma8();
+
+    let mut gray: GrayImage = resized.to_luma8();
+    image::imageops::flip_vertical_in_place(&mut gray);
 
     RasterImage {
         px_width,

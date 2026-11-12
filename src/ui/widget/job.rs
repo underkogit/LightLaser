@@ -7,6 +7,13 @@ use crate::core::layer::LayerSource;
 use crate::core::vector_gcode::export_vector_layer;
 use crate::ui::LaserApp;
 
+fn layer_origin(layer: &crate::core::layer::Layer) -> (f64, f64) {
+    layer
+        .bounds()
+        .map(|b| (layer.offset[0] + b.0, layer.offset[1] + b.1))
+        .unwrap_or((layer.offset[0], layer.offset[1]))
+}
+
 impl LaserApp {
     pub(crate) fn start_job(&mut self) {
         let lines = match self.build_job_gcode() {
@@ -39,7 +46,11 @@ impl LaserApp {
 
             lines.push(format!("; --- layer #{}: {} ---", i + 1, layer.name));
 
-            let origin = (layer.offset[0], layer.offset[1]);
+            let origin = layer_origin(layer);
+            let width_mm = layer
+                .bounds()
+                .map(|b| (b.2 - b.0).max(1.0))
+                .unwrap_or(100.0);
 
             let layer_cmds: Vec<GcodeCommand> = match &layer.source {
                 LayerSource::Image { path } => {
@@ -53,20 +64,16 @@ impl LaserApp {
                             threshold: layer.params.threshold,
                             invert: layer.params.invert,
                         },
-                        None,
+                        Some(width_mm),
                     );
 
                     engrave_layer(&raster, &layer.params, origin)
                         .map_err(|e| format!("engrave '{}': {}", path, e))?
                 }
                 LayerSource::Svg { path } => {
-                    let target_px = (layer.params.pixels_per_mm
-                        * layer
-                            .bounds()
-                            .map(|b| (b.2 - b.0).max(1.0))
-                            .unwrap_or(100.0))
-                    .round()
-                    .clamp(64.0, 4096.0) as u32;
+                    let target_px = (layer.params.pixels_per_mm * width_mm)
+                        .round()
+                        .clamp(64.0, 4096.0) as u32;
 
                     let svg = rasterize_svg(std::path::Path::new(path), target_px)
                         .map_err(|e| format!("svg '{}': {}", path, e))?;
@@ -78,7 +85,7 @@ impl LaserApp {
                             threshold: layer.params.threshold,
                             invert: layer.params.invert,
                         },
-                        Some((svg.width_mm).max(1.0)),
+                        Some(width_mm),
                     );
 
                     engrave_layer(&raster, &layer.params, origin)

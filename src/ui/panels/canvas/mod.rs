@@ -1,6 +1,6 @@
 mod draw;
 mod input;
-mod state;
+pub(crate) mod state;
 
 pub use state::CanvasState;
 
@@ -79,6 +79,11 @@ impl LaserApp {
         }
 
         response.context_menu(|ui| {
+            if ui.button("Preview").clicked() {
+                self.open_preview();
+                ui.close();
+            }
+            ui.separator();
             if ui
                 .add_enabled(has_selection, egui::Button::new("Copy"))
                 .clicked()

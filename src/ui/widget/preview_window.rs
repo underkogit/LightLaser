@@ -1,0 +1,369 @@
+use egui::{Color32, Pos2, Rect, Stroke, Vec2};
+
+use crate::core::image::{
+    RasterizeOptions, engrave_segments, load_image, rasterize, rasterize_svg,
+};
+use crate::core::layer::{Layer, LayerSource};
+use crate::core::vector::VectorPath;
+use crate::ui::LaserApp;
+
+impl LaserApp {
+    pub(crate) fn open_preview(&mut self) {
+        self.canvas.preview_window.open = true;
+        self.canvas.preview_window.pending = true;
+        self.canvas.preview_window.pending_fit = true;
+    }
+
+    pub(crate) fn ui_preview_window(&mut self, ctx: &egui::Context) {
+        if !self.canvas.preview_window.open {
+            return;
+        }
+
+        let mut open = self.canvas.preview_window.open;
+
+        egui::Window::new("Preview")
+            .id(egui::Id::new("preview_window"))
+            .open(&mut open)
+            .resizable(true)
+            .default_size([800.0, 600.0])
+            .min_size([400.0, 300.0])
+            .show(ctx, |ui| {
+                let panel_height = 64.0;
+                let canvas_height = (ui.available_height() - panel_height).max(50.0);
+
+                let (response, painter) = ui.allocate_painter(
+                    egui::vec2(ui.available_width(), canvas_height),
+                    egui::Sense::click_and_drag(),
+                );
+                let rect = response.rect;
+
+                if self.canvas.preview_window.pending {
+                    rebuild_preview(self);
+                    self.canvas.preview_window.pending = false;
+                    self.canvas.preview_window.pending_fit = true;
+                }
+
+                if self.canvas.preview_window.pending_fit {
+                    fit_preview(&mut self.canvas.preview_window, rect);
+                    self.canvas.preview_window.pending_fit = false;
+                }
+
+                painter.rect_filled(rect, 0.0, Color32::from_rgb(13, 13, 18));
+
+                if ui.input(|i| i.pointer.middle_down()) && response.dragged() {
+                    self.canvas.preview_window.offset += response.drag_delta();
+                }
+
+                let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+                if scroll != 0.0 && response.hovered() {
+                    let factor = 1.0 + scroll * 0.001;
+                    let center = response.hover_pos().unwrap_or(rect.center()) - rect.center();
+                    let old = self.canvas.preview_window.zoom;
+                    let new = (old * factor).clamp(0.05, 100.0);
+                    self.canvas.preview_window.offset =
+                        center + (self.canvas.preview_window.offset - center) * (new / old);
+                    self.canvas.preview_window.zoom = new;
+                }
+
+                draw_preview_grid(&painter, rect, &self.canvas.preview_window);
+                draw_preview_lines(&painter, rect, &self.canvas.preview_window);
+
+                ui.separator();
+
+                ui.horizontal(|ui| {
+                    if ui.button("Refresh").clicked() {
+                        self.canvas.preview_window.pending = true;
+                    }
+                    if ui.button("Fit").clicked() {
+                        self.canvas.preview_window.pending_fit = true;
+                    }
+                    let count = self.canvas.preview_window.lines.len();
+                    ui.label(format!("Segments: {}", count));
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let total = self.canvas.preview_window.lines.len();
+                        if total > 0 {
+                            let current_count =
+                                (total as f32 * self.canvas.preview_window.progress) as usize;
+                            ui.label(format!("{}/{}", current_count, total));
+                        }
+                    });
+                });
+
+                ui.add_space(4.0);
+
+                let total = self.canvas.preview_window.lines.len();
+                let mut progress = self.canvas.preview_window.progress;
+
+                let (rect, response) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), 16.0),
+                    egui::Sense::click_and_drag(),
+                );
+
+                if response.dragged() || response.clicked() {
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        let local_x = (pos.x - rect.min.x).clamp(0.0, rect.width());
+                        progress = local_x / rect.width();
+                        self.canvas.preview_window.progress = progress;
+                    }
+                }
+
+                let painter = ui.painter();
+                let track_rect = Rect::from_min_max(
+                    egui::pos2(rect.min.x, rect.center().y - 3.0),
+                    egui::pos2(rect.max.x, rect.center().y + 3.0),
+                );
+
+                painter.rect_filled(track_rect, 3.0, Color32::from_rgb(40, 40, 50));
+
+                if total > 0 {
+                    let fill_rect = Rect::from_min_max(
+                        track_rect.min,
+                        egui::pos2(
+                            track_rect.min.x + track_rect.width() * progress,
+                            track_rect.max.y,
+                        ),
+                    );
+                    painter.rect_filled(fill_rect, 3.0, Color32::from_rgb(255, 140, 40));
+
+                    let handle_pos = egui::pos2(
+                        track_rect.min.x + track_rect.width() * progress,
+                        track_rect.center().y,
+                    );
+                    painter.circle_filled(handle_pos, 8.0, Color32::from_rgb(255, 140, 40));
+                    painter.circle_filled(handle_pos, 6.0, Color32::WHITE);
+                }
+            });
+
+        self.canvas.preview_window.open = open;
+    }
+}
+
+fn rebuild_preview(app: &mut LaserApp) {
+    let mut lines: Vec<(f64, f64, f64, f64)> = Vec::new();
+
+    for layer in &app.project.layers {
+        if !layer.is_enabled || !layer.is_visible {
+            continue;
+        }
+        let segments = build_layer_segments(layer);
+        lines.extend(segments);
+    }
+
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+
+    for (x0, y0, x1, y1) in &lines {
+        min_x = min_x.min(*x0).min(*x1);
+        min_y = min_y.min(*y0).min(*y1);
+        max_x = max_x.max(*x0).max(*x1);
+        max_y = max_y.max(*y0).max(*y1);
+    }
+
+    let bounds = if min_x.is_finite() && min_y.is_finite() {
+        Some((min_x, min_y, max_x, max_y))
+    } else {
+        None
+    };
+
+    app.canvas.preview_window.lines = lines;
+    app.canvas.preview_window.bounds = bounds;
+    app.canvas.preview_window.progress = 1.0;
+}
+
+fn layer_origin(layer: &Layer) -> (f64, f64) {
+    layer
+        .bounds()
+        .map(|b| (layer.offset[0] + b.0, layer.offset[1] + b.1))
+        .unwrap_or((layer.offset[0], layer.offset[1]))
+}
+
+fn build_layer_segments(layer: &Layer) -> Vec<(f64, f64, f64, f64)> {
+    if layer.is_vector() {
+        let mut out = Vec::new();
+        for shape in &layer.shapes {
+            let mut path = VectorPath::new();
+            path.nodes = shape.nodes.clone();
+            path.stroke = shape.stroke.clone();
+            path.closed = shape.closed;
+            let pts = path.flatten(0.1);
+            if pts.len() < 2 {
+                continue;
+            }
+            for w in pts.windows(2) {
+                out.push((w[0].x, w[0].y, w[1].x, w[1].y));
+            }
+            if path.closed {
+                if let (Some(last), Some(first)) = (pts.last(), pts.first()) {
+                    out.push((last.x, last.y, first.x, first.y));
+                }
+            }
+        }
+        return out;
+    }
+
+    let origin = layer_origin(layer);
+    let width_mm = layer
+        .bounds()
+        .map(|b| (b.2 - b.0).max(1.0))
+        .unwrap_or(100.0);
+
+    let out: Vec<(f64, f64, f64, f64)> = match &layer.source {
+        LayerSource::Image { path } => {
+            let Ok(loaded) = load_image(std::path::Path::new(path)) else {
+                return Vec::new();
+            };
+            let raster = rasterize(
+                &loaded.dynamic,
+                RasterizeOptions {
+                    pixels_per_mm: layer.params.pixels_per_mm,
+                    threshold: layer.params.threshold,
+                    invert: layer.params.invert,
+                },
+                Some(width_mm),
+            );
+            engrave_segments(&raster, &layer.params, origin)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| (s.x0, s.y0, s.x1, s.y1))
+                .collect()
+        }
+        LayerSource::Svg { path } => {
+            let target_px = (layer.params.pixels_per_mm * width_mm)
+                .round()
+                .clamp(64.0, 4096.0) as u32;
+            let Ok(svg) = rasterize_svg(std::path::Path::new(path), target_px) else {
+                return Vec::new();
+            };
+            let raster = rasterize(
+                &svg.image,
+                RasterizeOptions {
+                    pixels_per_mm: layer.params.pixels_per_mm,
+                    threshold: layer.params.threshold,
+                    invert: layer.params.invert,
+                },
+                Some(width_mm),
+            );
+            engrave_segments(&raster, &layer.params, origin)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| (s.x0, s.y0, s.x1, s.y1))
+                .collect()
+        }
+        LayerSource::Gcode { path } => {
+            let Ok(content) = std::fs::read_to_string(path) else {
+                return Vec::new();
+            };
+            let mut out = Vec::new();
+            let mut cur = (0.0f64, 0.0f64);
+            let mut mode_rapid = false;
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with(';') {
+                    continue;
+                }
+                let mut nx = None;
+                let mut ny = None;
+                for tok in line.split_whitespace() {
+                    if let Some(rest) = tok.strip_prefix('G') {
+                        if let Ok(g) = rest.parse::<u32>() {
+                            if g == 0 {
+                                mode_rapid = true;
+                            } else if g == 1 {
+                                mode_rapid = false;
+                            }
+                        }
+                    } else if let Some(rest) = tok.strip_prefix('X') {
+                        nx = rest.parse::<f64>().ok();
+                    } else if let Some(rest) = tok.strip_prefix('Y') {
+                        ny = rest.parse::<f64>().ok();
+                    }
+                }
+                let px = nx.unwrap_or(cur.0);
+                let py = ny.unwrap_or(cur.1);
+                if !mode_rapid && (px != cur.0 || py != cur.1) {
+                    out.push((cur.0, cur.1, px, py));
+                }
+                cur = (px, py);
+            }
+            out
+        }
+        LayerSource::Vector => Vec::new(),
+    };
+
+    out
+}
+
+fn fit_preview(pw: &mut crate::ui::panels::canvas::state::PreviewWindow, rect: Rect) {
+    let Some((min_x, min_y, max_x, max_y)) = pw.bounds else {
+        pw.zoom = 1.0;
+        pw.offset = Vec2::ZERO;
+        return;
+    };
+    let w = (max_x - min_x).max(1.0) as f32;
+    let h = (max_y - min_y).max(1.0) as f32;
+
+    let avail_w = (rect.width() - 40.0).max(50.0);
+    let avail_h = (rect.height() - 40.0).max(50.0);
+
+    pw.zoom = (avail_w / w).min(avail_h / h).clamp(0.05, 100.0);
+
+    let cx = ((min_x + max_x) / 2.0) as f32;
+    let cy = ((min_y + max_y) / 2.0) as f32;
+    pw.offset = Vec2::new(-cx * pw.zoom, cy * pw.zoom);
+}
+
+fn to_screen(
+    pw: &crate::ui::panels::canvas::state::PreviewWindow,
+    rect: Rect,
+    x: f64,
+    y: f64,
+) -> Pos2 {
+    egui::pos2(
+        rect.center().x + x as f32 * pw.zoom + pw.offset.x,
+        rect.center().y - y as f32 * pw.zoom + pw.offset.y,
+    )
+}
+
+fn draw_preview_grid(
+    painter: &egui::Painter,
+    rect: Rect,
+    pw: &crate::ui::panels::canvas::state::PreviewWindow,
+) {
+    if let Some((min_x, min_y, max_x, max_y)) = pw.bounds {
+        let p0 = to_screen(pw, rect, min_x, max_y);
+        let p1 = to_screen(pw, rect, max_x, min_y);
+        let r = Rect::from_two_pos(p0, p1);
+        painter.rect_stroke(
+            r,
+            0.0,
+            Stroke::new(1.0, Color32::from_rgb(80, 80, 100)),
+            egui::StrokeKind::Outside,
+        );
+    }
+}
+
+fn draw_preview_lines(
+    painter: &egui::Painter,
+    rect: Rect,
+    pw: &crate::ui::panels::canvas::state::PreviewWindow,
+) {
+    let total = pw.lines.len();
+    let current_count = (total as f32 * pw.progress) as usize;
+
+    for (i, &(x0, y0, x1, y1)) in pw.lines.iter().enumerate() {
+        let a = to_screen(pw, rect, x0, y0);
+        let b = to_screen(pw, rect, x1, y1);
+
+        if i < current_count {
+            painter.line_segment([a, b], Stroke::new(1.0, Color32::from_rgb(255, 140, 40)));
+        } else {
+            painter.line_segment(
+                [a, b],
+                Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 140, 40, 30)),
+            );
+        }
+    }
+}

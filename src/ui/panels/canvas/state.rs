@@ -33,6 +33,32 @@ pub enum DragMode {
     },
 }
 
+pub struct PreviewWindow {
+    pub open: bool,
+    pub lines: Vec<(f64, f64, f64, f64)>,
+    pub bounds: Option<(f64, f64, f64, f64)>,
+    pub zoom: f32,
+    pub offset: Vec2,
+    pub pending: bool,
+    pub pending_fit: bool,
+    pub progress: f32,
+}
+
+impl Default for PreviewWindow {
+    fn default() -> Self {
+        Self {
+            open: false,
+            lines: Vec::new(),
+            bounds: None,
+            zoom: 1.0,
+            offset: Vec2::ZERO,
+            pending: false,
+            pending_fit: false,
+            progress: 1.0,
+        }
+    }
+}
+
 pub struct CanvasState {
     pub zoom: f32,
     pub offset: Vec2,
@@ -41,6 +67,7 @@ pub struct CanvasState {
     pub hovered_layer: Option<usize>,
     pub drag: DragMode,
     pub texture_cache: HashMap<String, TextureHandle>,
+    pub preview_window: PreviewWindow,
 }
 
 impl std::fmt::Debug for CanvasState {
@@ -52,6 +79,7 @@ impl std::fmt::Debug for CanvasState {
             .field("pending_center", &self.pending_center)
             .field("hovered_layer", &self.hovered_layer)
             .field("drag", &self.drag)
+            .field("preview_open", &self.preview_window.open)
             .finish()
     }
 }
@@ -66,6 +94,7 @@ impl Default for CanvasState {
             hovered_layer: None,
             drag: DragMode::None,
             texture_cache: HashMap::new(),
+            preview_window: PreviewWindow::default(),
         }
     }
 }
