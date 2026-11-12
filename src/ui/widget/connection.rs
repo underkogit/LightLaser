@@ -1,7 +1,8 @@
+
 use egui::{Align, Layout};
 use rust_i18n::t;
 
-use crate::comm::{GrblConnection, StreamerCommand};
+use crate::comm::StreamerCommand;
 use crate::ui::LaserApp;
 
 impl LaserApp {
@@ -38,11 +39,7 @@ impl LaserApp {
                         .width(180.0)
                         .show_ui(ui, |ui| {
                             for p in &ports {
-                                ui.selectable_value(
-                                    &mut self.project.machine.port,
-                                    p.clone(),
-                                    p,
-                                );
+                                ui.selectable_value(&mut self.project.machine.port, p.clone(), p);
                             }
                         });
 
@@ -67,20 +64,6 @@ impl LaserApp {
                         });
                 });
 
-                ui.add_space(8.0);
-                ui.checkbox(
-                    &mut self.project.machine.enable_laser_mode,
-                    t!("ui.label.connection.laser_mode").to_string(),
-                );
-                ui.checkbox(
-                    &mut self.project.machine.soft_limits,
-                    t!("ui.label.connection.soft_limits").to_string(),
-                );
-                ui.checkbox(
-                    &mut self.project.machine.homing_cycle,
-                    t!("ui.label.connection.homing_cycle").to_string(),
-                );
-
                 ui.add_space(16.0);
                 ui.separator();
 
@@ -93,7 +76,11 @@ impl LaserApp {
                         )
                         .clicked()
                     {
-                        self.try_connect();
+                        let port = self.project.machine.port.clone();
+                        let baudrate = self.project.machine.baudrate;
+
+                        self.streamer.send(StreamerCommand::Connect { port: port.clone(), baudrate });
+                        log::info!("{}", t!("comm.info.connecting", port = port));
                         open = false;
                     }
                     if ui
@@ -109,28 +96,5 @@ impl LaserApp {
             open = false;
         }
         self.connection_dialog_open = open;
-    }
-
-    fn try_connect(&mut self) {
-        let port = self.project.machine.port.clone();
-        let baudrate = self.project.machine.baudrate;
-
-        match GrblConnection::open(&port, baudrate) {
-            Ok(mut conn) => {
-                if let Err(e) = conn.configure(
-                    self.project.machine.enable_laser_mode,
-                    self.project.machine.soft_limits,
-                    self.project.machine.homing_cycle,
-                ) {
-                    log::error!("{}", t!("comm.error.configure", e = e.to_string()));
-                }
-
-                self.streamer.send(StreamerCommand::Connect { connection: conn });
-                log::info!("{}", t!("comm.info.connecting", port = port));
-            }
-            Err(e) => {
-                log::error!("{}", t!("comm.error.connect", e = e.to_string()));
-            }
-        }
     }
 }

@@ -1,3 +1,5 @@
+ 
+
 use std::fmt;
 use std::sync::mpsc::{Receiver, Sender};
 
@@ -91,23 +93,18 @@ impl GrblConnection {
         )))
     }
 
-    pub fn configure(
-        &mut self,
-        laser_mode: bool,
-        soft_limits: bool,
-        homing: bool,
-    ) -> Result<(), GrblError> {
-        if laser_mode {
-            self.send_and_wait_ok("$32=1")?;
-        }
-        self.send_and_wait_ok("$10=1")?;
-        self.send_and_wait_ok(if soft_limits { "$20=1" } else { "$20=0" })?;
-        self.send_and_wait_ok(if homing { "$22=1" } else { "$22=0" })?;
+    pub fn soft_reset(&mut self) -> Result<(), GrblError> {
+        self.conn.write_raw(&[0x18])?;
         Ok(())
     }
 
-    pub fn soft_reset(&mut self) -> Result<(), GrblError> {
-        self.conn.write_raw(&[0x18])?;
+    pub fn feed_hold(&mut self) -> Result<(), GrblError> {
+        self.conn.write_raw(&[b'!'])?;
+        Ok(())
+    }
+
+    pub fn cycle_start(&mut self) -> Result<(), GrblError> {
+        self.conn.write_raw(&[b'~'])?;
         Ok(())
     }
 

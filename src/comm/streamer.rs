@@ -7,7 +7,7 @@ use crate::comm::grbl::{GrblConnection, GrblEvent};
 use crate::comm::status::GrblStatus;
 
 pub enum StreamerCommand {
-    Connect { connection: GrblConnection },
+    Connect { port: String, baudrate: u32 },
     Disconnect,
     Start { lines: Vec<String> },
     Pause,
@@ -29,7 +29,7 @@ pub enum StreamerState {
 
 const RX_BUFFER_SIZE: usize = 120;
 
-const OK_TIMEOUT: Duration = Duration::from_secs(10);
+const OK_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub struct Streamer {
     cmd_tx: Sender<StreamerCommand>,
@@ -81,9 +81,18 @@ fn run_loop(cmd_rx: Receiver<StreamerCommand>, events_tx: Sender<GrblEvent>) {
     loop {
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
-                StreamerCommand::Connect { connection } => {
-                    grbl = Some(connection);
-                    let _ = events_tx.send(GrblEvent::Connected);
+                StreamerCommand::Connect { port, baudrate } => {
+                    let _ = events_tx.send(GrblEvent::Error(format!("Connecting to {}...", port)));
+                    match GrblConnection::open(&port, baudrate) {
+                        Ok(conn) => {
+                            grbl = Some(conn);
+                            let _ = events_tx.send(GrblEvent::Connected);
+                        }
+                        Err(e) => {
+                            let _ = events_tx.send(GrblEvent::Error(e.to_string()));
+                            let _ = events_tx.send(GrblEvent::Disconnected);
+                        }
+                    }
                 }
                 StreamerCommand::Disconnect => {
                     if let Some(mut g) = grbl.take() {
@@ -111,11 +120,17 @@ fn run_loop(cmd_rx: Receiver<StreamerCommand>, events_tx: Sender<GrblEvent>) {
                 }
                 StreamerCommand::Pause => {
                     if state == StreamerState::Running {
+                        if let Some(g) = grbl.as_mut() {
+                            let _ = g.feed_hold();
+                        }
                         state = StreamerState::Paused;
                     }
                 }
                 StreamerCommand::Resume => {
                     if state == StreamerState::Paused {
+                        if let Some(g) = grbl.as_mut() {
+                            let _ = g.cycle_start();
+                        }
                         state = StreamerState::Running;
                         last_ok_at = Instant::now();
                     }
@@ -127,18 +142,17 @@ fn run_loop(cmd_rx: Receiver<StreamerCommand>, events_tx: Sender<GrblEvent>) {
                 }
                 StreamerCommand::Jog { dx, dy, feed } => {
                     if let Some(g) = grbl.as_mut() {
-                        let cmd = format!("$J=G91 X{:.3} Y{:.3} F{:.0}", dx, dy, feed);
-                        let _ = g.write_line_raw(&cmd);
+                        let _ = g.jog(dx, dy, feed);
                     }
                 }
                 StreamerCommand::Home => {
                     if let Some(g) = grbl.as_mut() {
-                        let _ = g.write_line_raw("$H");
+                        let _ = g.home();
                     }
                 }
                 StreamerCommand::Unlock => {
                     if let Some(g) = grbl.as_mut() {
-                        let _ = g.write_line_raw("$X");
+                        let _ = g.unlock();
                     }
                 }
                 StreamerCommand::Shutdown => {

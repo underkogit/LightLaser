@@ -16,7 +16,7 @@ impl SerialConnection {
 
         let _ = port.write_data_terminal_ready(false);
         let _ = port.write_request_to_send(false);
-        std::thread::sleep(Duration::from_millis(2000));
+        std::thread::sleep(Duration::from_millis(500));
 
         let reader = BufReader::new(port.try_clone()?);
         Ok(Self { port, reader })

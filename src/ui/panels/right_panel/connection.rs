@@ -38,19 +38,5 @@ impl LaserApp {
                     }
                 });
         });
-
-        ui.add_space(8.0);
-        ui.checkbox(
-            &mut self.project.machine.enable_laser_mode,
-            t!("ui.label.connection.laser_mode").to_string(),
-        );
-        ui.checkbox(
-            &mut self.project.machine.soft_limits,
-            t!("ui.label.connection.soft_limits").to_string(),
-        );
-        ui.checkbox(
-            &mut self.project.machine.homing_cycle,
-            t!("ui.label.connection.homing_cycle").to_string(),
-        );
     }
 }
