@@ -18,13 +18,6 @@ impl LaserApp {
                     ui.set_min_height(ui.available_height());
 
                     ui.horizontal(|ui| {
-                        ui.label(format!(
-                            "{}: X {:.3} mm, Y {:.3} mm",
-                            t!("ui.status_bar.mouse"),
-                            self.status_bar.mouse_x(),
-                            self.status_bar.mouse_y(),
-                        ));
-
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.label(format!("LightLazer v{}", env!("CARGO_PKG_VERSION")));
                         });
@@ -62,8 +55,6 @@ impl LaserApp {
                     .show(ui, |ui| {
                         ui.set_min_width(ui.available_width());
 
-                        let palette = elegance::Theme::current(ui.ctx()).palette;
-
                         let snapshot: Vec<LogEntry> = match self.log_buffer.lock() {
                             Ok(logs) => logs.iter().cloned().collect(),
                             Err(_) => Vec::new(),
@@ -74,10 +65,10 @@ impl LaserApp {
                         } else {
                             for (i, entry) in snapshot.iter().enumerate() {
                                 let color = match entry.level {
-                                    log::Level::Error => palette.danger,
-                                    log::Level::Warn => palette.warning,
-                                    log::Level::Info => palette.text_muted,
-                                    _ => palette.text_faint,
+                                    log::Level::Error => ui.visuals().error_fg_color,
+                                    log::Level::Warn => ui.visuals().warn_fg_color,
+                                    log::Level::Info => ui.visuals().text_color(),
+                                    _ => ui.visuals().weak_text_color(),
                                 };
                                 ui.push_id(i, |ui| {
                                     ui.add(
@@ -87,7 +78,7 @@ impl LaserApp {
                                                 .monospace()
                                                 .size(12.0),
                                         )
-                                            .wrap_mode(egui::TextWrapMode::Wrap),
+                                        .wrap_mode(egui::TextWrapMode::Wrap),
                                     );
                                 });
                             }
@@ -95,6 +86,7 @@ impl LaserApp {
                     });
             });
 
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(200));
     }
 }

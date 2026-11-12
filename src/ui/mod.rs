@@ -3,14 +3,13 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
-use elegance::Theme;
 use rust_i18n::t;
 
 use crate::comm::{GrblEvent, GrblStatus, Streamer, StreamerState};
 use crate::core::layer::Project;
 use crate::logger::LogEntry;
 use crate::ui::{
-    app_config::{AppConfig, AppTheme},
+    app_config::AppConfig,
     history::History,
     panels::canvas::CanvasState,
     selection::Selection,
@@ -62,7 +61,7 @@ pub struct LaserApp {
 
 impl LaserApp {
     pub fn new(
-        cc: &eframe::CreationContext<'_>,
+        _cc: &eframe::CreationContext<'_>,
         log_buffer: Arc<Mutex<VecDeque<LogEntry>>>,
         app_config: AppConfig,
         config_folder: PathBuf,
@@ -70,8 +69,6 @@ impl LaserApp {
         events_rx: Receiver<GrblEvent>,
         events_tx: Sender<GrblEvent>,
     ) -> Self {
-        apply_theme(&cc.egui_ctx, &app_config.app_theme);
-
         Self {
             project: Project::new(),
             current_project_path: None,
@@ -159,8 +156,6 @@ impl eframe::App for LaserApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_grbl_events();
 
-        apply_theme(ui.ctx(), &self.app_config.app_theme);
-
         let screen_rect = ui.ctx().viewport_rect();
         self.app_config.window_width = screen_rect.width();
         self.app_config.window_height = screen_rect.height();
@@ -246,14 +241,4 @@ impl LaserApp {
             self.export_dialog_open = true;
         }
     }
-}
-
-fn apply_theme(ctx: &egui::Context, app_theme: &AppTheme) {
-    let theme = match app_theme {
-        AppTheme::Slate => Theme::slate(),
-        AppTheme::Charcoal => Theme::charcoal(),
-        AppTheme::Frost => Theme::frost(),
-        AppTheme::Paper => Theme::paper(),
-    };
-    theme.install(ctx);
 }

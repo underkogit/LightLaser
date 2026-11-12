@@ -75,6 +75,15 @@ fn main() {
             egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
             cc.egui_ctx.set_fonts(fonts);
 
+            cc.egui_ctx.all_styles_mut(|style| {
+                style.spacing.item_spacing = egui::vec2(8.0, 2.0);
+                style.spacing.button_padding = egui::vec2(12.0, 2.0);
+                style.spacing.interact_size = egui::vec2(44.0, 32.0);
+                style.spacing.icon_width = 16.0;
+                style.spacing.icon_width_inner = 10.0;
+
+            });
+
             Ok(Box::new(LaserApp::new(
                 cc,
                 log_buffer,

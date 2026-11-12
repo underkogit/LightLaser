@@ -23,7 +23,6 @@ impl LaserApp {
                 ui.separator();
                 ui.add_space(8.0);
 
-                 
                 let ports: Vec<String> = serialport::available_ports()
                     .map(|list| list.into_iter().map(|p| p.port_name).collect())
                     .unwrap_or_default();
@@ -48,7 +47,6 @@ impl LaserApp {
                         });
 
                     if ui.button("⟳").clicked() {
-                              
                         ui.ctx().request_repaint();
                     }
                 });
@@ -91,7 +89,7 @@ impl LaserApp {
                     if ui
                         .add_enabled(
                             can_connect,
-                            elegance::Button::new(t!("ui.button.connect").to_string()),
+                            egui::Button::new(t!("ui.button.connect").to_string()),
                         )
                         .clicked()
                     {
@@ -99,7 +97,7 @@ impl LaserApp {
                         open = false;
                     }
                     if ui
-                        .add(elegance::Button::new(t!("ui.button.cancel").to_string()))
+                        .add(egui::Button::new(t!("ui.button.cancel").to_string()))
                         .clicked()
                     {
                         open = false;

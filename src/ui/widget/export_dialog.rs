@@ -37,14 +37,14 @@ impl LaserApp {
 
                 ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                     if ui
-                        .add(elegance::Button::new(t!("ui.button.export").to_string()))
+                        .add(egui::Button::new(t!("ui.button.export").to_string()))
                         .clicked()
                     {
                         self.run_export();
                         open = false;
                     }
                     if ui
-                        .add(elegance::Button::new(t!("ui.button.cancel").to_string()))
+                        .add(egui::Button::new(t!("ui.button.cancel").to_string()))
                         .clicked()
                     {
                         open = false;
