@@ -329,66 +329,6 @@ fn draw_layer(
                 Color32::WHITE
             },
         );
-    } else if let LayerSource::Gerber { path } = &layer.source {
-        let gerber_paths = crate::core::image::gerber::parse_gerber(std::path::Path::new(path))
-            .unwrap_or_default();
-
-        let mut min_g_x = f64::INFINITY;
-        let mut min_g_y = f64::INFINITY;
-        let mut max_g_x = f64::NEG_INFINITY;
-        let mut max_g_y = f64::NEG_INFINITY;
-
-        for p in &gerber_paths {
-            for pt in &p.points {
-                min_g_x = min_g_x.min(pt.0);
-                min_g_y = min_g_y.min(pt.1);
-                max_g_x = max_g_x.max(pt.0);
-                max_g_y = max_g_y.max(pt.1);
-            }
-        }
-
-        let (w_mm, h_mm) = (max_x - min_x, max_y - min_y);
-        let (w_g, h_g) = (max_g_x - min_g_x, max_g_y - min_g_y);
-        let scale = if w_g.max(h_g) > 0.0 {
-            w_mm.max(h_mm) / w_g.max(h_g)
-        } else {
-            1.0
-        };
-
-        let color = if layer_selected {
-            colors::PATH_LAYER_SELECTED
-        } else {
-            Color32::from_rgb(layer.color[0], layer.color[1], layer.color[2])
-        };
-        let stroke = Stroke::new(1.0, color);
-
-        for p in gerber_paths {
-            if p.points.len() < 2 {
-                continue;
-            }
-            for win in p.points.windows(2) {
-                let x0 = min_x + (win[0].0 - min_g_x) * scale;
-                let y0 = min_y + (win[0].1 - min_g_y) * scale;
-                let x1 = min_x + (win[1].0 - min_g_x) * scale;
-                let y1 = min_y + (win[1].1 - min_g_y) * scale;
-                painter.line_segment(
-                    [transform.to_screen(x0, y0), transform.to_screen(x1, y1)],
-                    stroke,
-                );
-            }
-            if p.closed {
-                let first = p.points[0];
-                let last = p.points[p.points.len() - 1];
-                let x0 = min_x + (last.0 - min_g_x) * scale;
-                let y0 = min_y + (last.1 - min_g_y) * scale;
-                let x1 = min_x + (first.0 - min_g_x) * scale;
-                let y1 = min_y + (first.1 - min_g_y) * scale;
-                painter.line_segment(
-                    [transform.to_screen(x0, y0), transform.to_screen(x1, y1)],
-                    stroke,
-                );
-            }
-        }
     } else {
         let alpha = if layer_selected { 180 } else { 120 };
         let color =

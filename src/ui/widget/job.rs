@@ -144,7 +144,6 @@ impl LaserApp {
                 }
                 LayerSource::Vector => export_vector_layer(layer, &layer.params, origin)
                     .map_err(|e| format!("vector '{}': {}", layer.name, e))?,
-                &LayerSource::Gerber { .. } => todo!(),
             };
 
             for cmd in layer_cmds {

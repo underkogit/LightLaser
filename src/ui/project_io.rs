@@ -2,37 +2,34 @@ use std::path::Path;
 
 use rust_i18n::t;
 
-use crate::core::{
-    image::{extract_palette, load_image, rasterize_svg, svg_trace},
-    layer::{EngraveMode, Layer, LayerSource, PROJECT_VERSION, Project},
-};
+use crate::core::layer::{Layer, LayerSource};
 use crate::ui::LaserApp;
-
-const DEFAULT_LAYER_WIDTH_MM: f64 = 100.0;
 
 impl LaserApp {
     pub(crate) fn new_project(&mut self) {
-        self.project = Project::new();
+        self.push_history();
+        self.project = crate::core::layer::Project::new();
         self.current_project_path = None;
         self.ui_state.selection.clear();
-        self.canvas = Default::default();
-        log::info!("New project created");
+        self.canvas.texture_cache.clear();
+        log::info!("New project");
     }
 
     pub(crate) fn open_project_interactive(&mut self) {
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("LightLazer Project", &["toml"])
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("LightLazer project", &["toml"])
             .pick_file()
-        {
-            match self.load_project_from(&path) {
-                Ok(()) => {
-                    self.current_project_path = Some(path.clone());
-                    self.center_view();
-                    log::info!("{}", t!("ui.info.loaded_project", path = path.display()));
-                }
-                Err(e) => log::error!("{}", t!("ui.error.load_project", e = e)),
-            }
+        else {
+            return;
+        };
+        if let Err(e) = self.load_project_from(&path) {
+            log::error!("{}", t!("ui.error.load_project", e = e));
+            return;
         }
+        self.current_project_path = Some(path.clone());
+        self.canvas.texture_cache.clear();
+        self.center_view();
+        log::info!("{}", t!("ui.info.loaded_project", path = path.display()));
     }
 
     pub(crate) fn save_project_interactive(&mut self) {
@@ -42,53 +39,45 @@ impl LaserApp {
             } else {
                 log::info!("{}", t!("ui.info.project_saved", path = path.display()));
             }
-        } else {
-            self.save_project_as_interactive();
+            return;
         }
+        self.save_project_as_interactive();
     }
 
     pub(crate) fn save_project_as_interactive(&mut self) {
-        let default_name = if self.current_project_path.is_none() {
-            let date = chrono::Local::now().format("%Y-%m-%d");
-            format!("{date}_lightlazer.toml")
-        } else {
-            "project.toml".to_string()
-        };
-
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("LightLazer Project", &["toml"])
-            .set_file_name(&default_name)
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("LightLazer project", &["toml"])
+            .set_file_name("project.toml")
             .save_file()
-        {
-            match self.save_project_to(&path) {
-                Ok(()) => {
-                    self.current_project_path = Some(path.clone());
-                    log::info!("{}", t!("ui.info.project_saved", path = path.display()));
-                }
-                Err(e) => log::error!("{}", t!("ui.error.save_project", e = e)),
-            }
+        else {
+            return;
+        };
+        if let Err(e) = self.save_project_to(&path) {
+            log::error!("{}", t!("ui.error.save_project", e = e));
+            return;
         }
-    }
-
-    fn save_project_to(&self, path: &Path) -> Result<(), String> {
-        let content =
-            toml::to_string_pretty(&self.project).map_err(|e| format!("serialize: {}", e))?;
-        std::fs::write(path, content).map_err(|e| format!("write: {}", e))
+        self.current_project_path = Some(path.clone());
+        log::info!("{}", t!("ui.info.project_saved", path = path.display()));
     }
 
     pub(crate) fn load_project_from(&mut self, path: &Path) -> Result<(), String> {
-        let content = std::fs::read_to_string(path).map_err(|e| format!("read: {}", e))?;
-        let project: Project = toml::from_str(&content).map_err(|e| format!("parse: {}", e))?;
+        let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let mut project: crate::core::layer::Project =
+            toml::from_str(&content).map_err(|e| e.to_string())?;
 
-        if project.version != PROJECT_VERSION {
+        if project.version != crate::core::layer::PROJECT_VERSION {
             log::warn!(
                 "{}",
                 t!(
                     "ui.warn.project_version",
                     file = project.version,
-                    app = PROJECT_VERSION
+                    app = crate::core::layer::PROJECT_VERSION
                 )
             );
+        }
+
+        for layer in &mut project.layers {
+            layer.recompute_bounds();
         }
 
         self.project = project;
@@ -96,320 +85,117 @@ impl LaserApp {
         Ok(())
     }
 
+    pub(crate) fn save_project_to(&self, path: &Path) -> Result<(), String> {
+        let content = toml::to_string_pretty(&self.project).map_err(|e| e.to_string())?;
+        std::fs::write(path, content).map_err(|e| e.to_string())
+    }
+
     pub(crate) fn add_image_interactive(&mut self) {
-        let Some(paths) = rfd::FileDialog::new()
+        let Some(path) = rfd::FileDialog::new()
             .add_filter("Images", &["png", "jpg", "jpeg", "bmp"])
-            .pick_files()
+            .pick_file()
         else {
             return;
         };
+        self.add_image_from_path(&path);
+        self.center_view();
+    }
 
-        for path in paths {
-            self.add_image_from_path(&path);
-        }
+    pub(crate) fn add_svg_interactive(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("SVG", &["svg"])
+            .pick_file()
+        else {
+            return;
+        };
+        self.add_svg_from_path(&path);
+        self.center_view();
+    }
 
+    pub(crate) fn add_svg_pcb_interactive(&mut self) {
+        self.add_svg_interactive();
+    }
+
+    pub(crate) fn add_gcode_interactive(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("G-code", &["nc", "gcode", "txt"])
+            .pick_file()
+        else {
+            return;
+        };
+        self.add_gcode_from_path(&path);
         self.center_view();
     }
 
     pub(crate) fn add_image_from_path(&mut self, path: &Path) {
-        match self.create_image_layers(path) {
-            Ok(layers) => {
-                for layer in layers {
-                    let name = layer.name.clone();
-                    self.project.add_layer(layer);
-                    log::info!("{}", t!("ui.info.layer_added", name = name));
-                }
+        match crate::core::image::load_image(path) {
+            Ok(img) => {
+                let aspect = img.aspect_ratio().max(1e-6);
+                let width_mm = 100.0;
+                let height_mm = width_mm / aspect;
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("image")
+                    .to_string();
+                let mut layer = Layer::new(
+                    name.clone(),
+                    crate::ui::colors::LAYER_DEFAULT,
+                    LayerSource::Image {
+                        path: path.to_string_lossy().to_string(),
+                    },
+                );
+                layer.set_bounds(0.0, 0.0, width_mm, height_mm);
+                self.push_history();
+                self.project.add_layer(layer);
+                log::info!("{}", t!("ui.info.layer_added", name = name));
             }
-            Err(e) => log::error!("{}", t!("ui.error.add_layer", e = e)),
+            Err(e) => log::error!("{}", t!("ui.error.add_layer", e = e.to_string())),
         }
-    }
-
-    fn create_image_layers(&self, path: &Path) -> Result<Vec<Layer>, String> {
-        let loaded = load_image(path).map_err(|e| e.to_string())?;
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Image")
-            .to_string();
-
-        let palette = extract_palette(&loaded.dynamic);
-        let aspect = loaded.aspect_ratio();
-        let width_mm = DEFAULT_LAYER_WIDTH_MM;
-        let height_mm = width_mm / aspect.max(1e-9);
-        let ppm = loaded.width as f64 / width_mm;
-
-        let color = palette.first().map(|c| c.rgb).unwrap_or([220, 220, 220]);
-
-        let mut layer = Layer::new(
-            stem,
-            color,
-            LayerSource::Image {
-                path: path.to_string_lossy().to_string(),
-            },
-        );
-        layer.set_bounds(0.0, 0.0, width_mm, height_mm);
-        layer.params.pixels_per_mm = ppm.max(1.0);
-
-        Ok(vec![layer])
-    }
-
-    pub(crate) fn add_svg_interactive(&mut self) {
-        let Some(paths) = rfd::FileDialog::new()
-            .add_filter("SVG", &["svg"])
-            .pick_files()
-        else {
-            return;
-        };
-
-        for path in paths {
-            self.add_svg_from_path(&path);
-        }
-
-        self.center_view();
     }
 
     pub(crate) fn add_svg_from_path(&mut self, path: &Path) {
-        match self.create_svg_layer(path) {
-            Ok(layer) => {
-                let name = layer.name.clone();
+        match crate::core::image::rasterize_svg(path, 1024) {
+            Ok(svg) => {
+                let width_mm = svg.width_mm.max(1.0);
+                let height_mm = svg.height_mm.max(1.0);
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("svg")
+                    .to_string();
+                let mut layer = Layer::new(
+                    name.clone(),
+                    crate::ui::colors::LAYER_DEFAULT,
+                    LayerSource::Svg {
+                        path: path.to_string_lossy().to_string(),
+                    },
+                );
+                layer.set_bounds(0.0, 0.0, width_mm, height_mm);
+                self.push_history();
                 self.project.add_layer(layer);
                 log::info!("{}", t!("ui.info.layer_added", name = name));
             }
             Err(e) => log::error!("{}", t!("ui.error.add_layer", e = e)),
         }
-    }
-
-    fn create_svg_layer(&self, path: &Path) -> Result<Layer, String> {
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Svg")
-            .to_string();
-
-        let raster = rasterize_svg(path, 1024)?;
-
-        let width_mm = raster.width_mm.max(1.0);
-        let height_mm = raster.height_mm.max(1.0);
-
-        let px_per_mm = raster.image.width() as f64 / width_mm;
-        let px_per_mm_y = raster.image.height() as f64 / height_mm;
-        let px_per_mm = px_per_mm.max(px_per_mm_y);
-
-        let mut layer = Layer::new(
-            stem,
-            [200, 200, 220],
-            LayerSource::Svg {
-                path: path.to_string_lossy().to_string(),
-            },
-        );
-
-        layer.set_bounds(0.0, 0.0, width_mm, height_mm);
-        layer.params.pixels_per_mm = px_per_mm.max(1.0);
-        layer.params.threshold = 128;
-        layer.params.invert = true;
-
-        Ok(layer)
-    }
-
-    pub(crate) fn add_svg_pcb_interactive(&mut self) {
-        let Some(paths) = rfd::FileDialog::new()
-            .add_filter("PCB SVG", &["svg"])
-            .pick_files()
-        else {
-            return;
-        };
-
-        for path in paths {
-            self.add_svg_pcb_from_path(&path);
-        }
-
-        self.center_view();
-    }
-
-    pub(crate) fn add_svg_pcb_from_path(&mut self, path: &Path) {
-        match self.create_svg_pcb_layer(path) {
-            Ok(layer) => {
-                let name = layer.name.clone();
-                self.project.add_layer(layer);
-                log::info!("{}", t!("ui.info.layer_added", name = name));
-            }
-            Err(e) => log::error!("{}", t!("ui.error.add_layer", e = e)),
-        }
-    }
-
-    fn create_svg_pcb_layer(&self, path: &Path) -> Result<Layer, String> {
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("PCB Svg")
-            .to_string();
-
-        let mut layer = Layer::new(
-            stem,
-            [255, 255, 255],
-            LayerSource::Svg {
-                path: path.to_string_lossy().to_string(),
-            },
-        );
-
-        layer.params.engrave_mode = EngraveMode::Lines;
-        layer.params.pixels_per_mm = 10.0;
-
-        let img = svg_trace::rasterize_svg_to_image(path, 1024)?;
-        let width_mm = DEFAULT_LAYER_WIDTH_MM;
-        let height_mm = width_mm * (img.height() as f64 / img.width() as f64);
-
-        layer.set_bounds(0.0, 0.0, width_mm, height_mm);
-
-        Ok(layer)
-    }
-
-    pub(crate) fn add_gerber_interactive(&mut self) {
-        let Some(paths) = rfd::FileDialog::new()
-            .add_filter("Gerber", &["gbr", "ger"])
-            .pick_files()
-        else {
-            return;
-        };
-
-        for path in paths {
-            self.add_gerber_from_path(&path);
-        }
-
-        self.center_view();
-    }
-
-    pub(crate) fn add_gerber_from_path(&mut self, path: &Path) {
-        match self.create_gerber_layer(path) {
-            Ok(layer) => {
-                let name = layer.name.clone();
-                self.project.add_layer(layer);
-                log::info!("{}", t!("ui.info.layer_added", name = name));
-            }
-            Err(e) => log::error!("{}", t!("ui.error.add_layer", e = e)),
-        }
-    }
-
-    fn create_gerber_layer(&self, path: &Path) -> Result<Layer, String> {
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Gerber")
-            .to_string();
-
-        let mut layer = Layer::new(
-            stem,
-            [200, 220, 200],
-            LayerSource::Gerber {
-                path: path.to_string_lossy().to_string(),
-            },
-        );
-
-        layer.params.engrave_mode = EngraveMode::Lines;
-
-        let paths = crate::core::image::gerber::parse_gerber(path)?;
-
-        let mut min_x = f64::INFINITY;
-        let mut min_y = f64::INFINITY;
-        let mut max_x = f64::NEG_INFINITY;
-        let mut max_y = f64::NEG_INFINITY;
-
-        for p in &paths {
-            for pt in &p.points {
-                min_x = min_x.min(pt.0);
-                min_y = min_y.min(pt.1);
-                max_x = max_x.max(pt.0);
-                max_y = max_y.max(pt.1);
-            }
-        }
-
-        if min_x.is_finite() && min_y.is_finite() {
-            let w = (max_x - min_x).max(1.0);
-            let h = (max_y - min_y).max(1.0);
-
-            let target_w = 100.0;
-            let scale = target_w / w.max(h);
-
-            layer.set_bounds(0.0, 0.0, w * scale, h * scale);
-        } else {
-            layer.set_bounds(0.0, 0.0, DEFAULT_LAYER_WIDTH_MM, DEFAULT_LAYER_WIDTH_MM);
-        }
-
-        Ok(layer)
-    }
-
-    pub(crate) fn add_gcode_interactive(&mut self) {
-        let Some(paths) = rfd::FileDialog::new()
-            .add_filter("G-code", &["nc", "gcode", "gbr", "txt"])
-            .pick_files()
-        else {
-            return;
-        };
-
-        for path in paths {
-            self.add_gcode_from_path(&path);
-        }
-
-        self.center_view();
     }
 
     pub(crate) fn add_gcode_from_path(&mut self, path: &Path) {
-        match self.create_gcode_layer(path) {
-            Ok(layer) => {
-                let name = layer.name.clone();
-                self.project.add_layer(layer);
-                log::info!("{}", t!("ui.info.layer_added", name = name));
-            }
-            Err(e) => log::error!("{}", t!("ui.error.add_layer", e = e)),
-        }
-    }
-
-    fn create_gcode_layer(&self, path: &Path) -> Result<Layer, String> {
-        let cmds =
-            crate::core::gcode::parse_file(path).map_err(|e| format!("gcode parse: {}", e))?;
-
-        let mut min_x = f64::INFINITY;
-        let mut min_y = f64::INFINITY;
-        let mut max_x = f64::NEG_INFINITY;
-        let mut max_y = f64::NEG_INFINITY;
-        let mut cur_x = 0.0;
-        let mut cur_y = 0.0;
-
-        for c in &cmds {
-            if let Some(x) = c.x {
-                cur_x = x;
-            }
-            if let Some(y) = c.y {
-                cur_y = y;
-            }
-            if c.x.is_some() || c.y.is_some() {
-                min_x = min_x.min(cur_x);
-                min_y = min_y.min(cur_y);
-                max_x = max_x.max(cur_x);
-                max_y = max_y.max(cur_y);
-            }
-        }
-
-        let stem = path
+        let name = path
             .file_stem()
             .and_then(|s| s.to_str())
-            .unwrap_or("Gcode")
+            .unwrap_or("gcode")
             .to_string();
-
         let mut layer = Layer::new(
-            stem,
-            [180, 180, 200],
+            name.clone(),
+            crate::ui::colors::LAYER_DEFAULT,
             LayerSource::Gcode {
                 path: path.to_string_lossy().to_string(),
             },
         );
-
-        if min_x.is_finite() && min_y.is_finite() {
-            layer.set_bounds(min_x, min_y, max_x, max_y);
-        } else {
-            layer.set_bounds(0.0, 0.0, DEFAULT_LAYER_WIDTH_MM, DEFAULT_LAYER_WIDTH_MM);
-        }
-
-        Ok(layer)
+        layer.set_bounds(0.0, 0.0, 100.0, 100.0);
+        self.push_history();
+        self.project.add_layer(layer);
+        log::info!("{}", t!("ui.info.layer_added", name = name));
     }
 }

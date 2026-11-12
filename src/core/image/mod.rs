@@ -1,5 +1,4 @@
 pub(crate) mod engraver;
-pub(crate) mod gerber;
 mod loader;
 mod palette;
 mod raster;

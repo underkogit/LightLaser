@@ -211,7 +211,7 @@ fn build_layer_segments(layer: &Layer) -> Vec<(f64, f64, f64, f64)> {
         .map(|b| (b.2 - b.0).max(1.0))
         .unwrap_or(100.0);
 
-    let out: Vec<(f64, f64, f64, f64)> = match &layer.source {
+    match &layer.source {
         LayerSource::Image { path } => {
             let Ok(loaded) = load_image(std::path::Path::new(path)) else {
                 return Vec::new();
@@ -323,63 +323,8 @@ fn build_layer_segments(layer: &Layer) -> Vec<(f64, f64, f64, f64)> {
             }
             out
         }
-        LayerSource::Gerber { path } => {
-            let Ok(gerber_paths) =
-                crate::core::image::gerber::parse_gerber(std::path::Path::new(path))
-            else {
-                return Vec::new();
-            };
-
-            let mut min_x = f64::INFINITY;
-            let mut min_y = f64::INFINITY;
-            let mut max_x = f64::NEG_INFINITY;
-            let mut max_y = f64::NEG_INFINITY;
-
-            for p in &gerber_paths {
-                for pt in &p.points {
-                    min_x = min_x.min(pt.0);
-                    min_y = min_y.min(pt.1);
-                    max_x = max_x.max(pt.0);
-                    max_y = max_y.max(pt.1);
-                }
-            }
-
-            let (w, h) = (max_x - min_x, max_y - min_y);
-            let target_w = width_mm;
-            let scale = if w.max(h) > 0.0 {
-                target_w / w.max(h)
-            } else {
-                1.0
-            };
-
-            let mut out = Vec::new();
-            for p in gerber_paths {
-                if p.points.len() < 2 {
-                    continue;
-                }
-                for win in p.points.windows(2) {
-                    let x0 = origin.0 + (win[0].0 - min_x) * scale;
-                    let y0 = origin.1 + (win[0].1 - min_y) * scale;
-                    let x1 = origin.0 + (win[1].0 - min_x) * scale;
-                    let y1 = origin.1 + (win[1].1 - min_y) * scale;
-                    out.push((x0, y0, x1, y1));
-                }
-                if p.closed {
-                    let first = p.points[0];
-                    let last = p.points[p.points.len() - 1];
-                    let x0 = origin.0 + (last.0 - min_x) * scale;
-                    let y0 = origin.1 + (last.1 - min_y) * scale;
-                    let x1 = origin.0 + (first.0 - min_x) * scale;
-                    let y1 = origin.1 + (first.1 - min_y) * scale;
-                    out.push((x0, y0, x1, y1));
-                }
-            }
-            out
-        }
         LayerSource::Vector => Vec::new(),
-    };
-
-    out
+    }
 }
 
 fn fit_preview(pw: &mut crate::ui::panels::canvas::state::PreviewWindow, rect: Rect) {

@@ -60,10 +60,6 @@ impl LaserApp {
                 self.add_svg_pcb_interactive();
                 ui.close();
             }
-            if ui.button("Add Gerber").clicked() {
-                self.add_gerber_interactive();
-                ui.close();
-            }
             if ui.button(t!("ui.menu.add_gcode")).clicked() {
                 self.add_gcode_interactive();
                 ui.close();

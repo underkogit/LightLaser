@@ -1,10 +1,8 @@
-use egui::{Color32, Painter, Stroke};
-
 use crate::core::config::MachineConfig;
 use crate::ui::colors;
 use crate::ui::CanvasTransform;
 
-pub fn draw_grid(painter: &Painter, transform: &CanvasTransform, step_mm: f64) {
+pub fn draw_grid(painter: &egui::Painter, transform: &CanvasTransform, step_mm: f64) {
     if step_mm <= 0.0 || transform.scale <= 0.0 {
         return;
     }
@@ -23,7 +21,7 @@ pub fn draw_grid(painter: &Painter, transform: &CanvasTransform, step_mm: f64) {
     let y_start = (wmin_y / step_mm).floor() as i64;
     let y_end = (wmax_y / step_mm).ceil() as i64;
 
-    let stroke = Stroke::new(1.0, Color32::from_rgb(40, 40, 50));
+    let stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(40, 40, 50));
 
     for i in x_start..=x_end {
         let x = i as f64 * step_mm;
@@ -40,7 +38,7 @@ pub fn draw_grid(painter: &Painter, transform: &CanvasTransform, step_mm: f64) {
     }
 }
 
-pub fn draw_axes(painter: &Painter, transform: &CanvasTransform) {
+pub fn draw_axes(painter: &egui::Painter, transform: &CanvasTransform) {
     let rect = transform.rect;
     let (wmin_x, wmin_y) = transform.to_world(egui::pos2(rect.min.x, rect.max.y));
     let (wmax_x, wmax_y) = transform.to_world(egui::pos2(rect.max.x, rect.min.y));
@@ -48,17 +46,17 @@ pub fn draw_axes(painter: &Painter, transform: &CanvasTransform) {
     if wmin_y <= 0.0 && wmax_y >= 0.0 {
         let a = transform.to_screen(wmin_x, 0.0);
         let b = transform.to_screen(wmax_x, 0.0);
-        painter.line_segment([a, b], Stroke::new(1.0, Color32::from_rgb(180, 60, 60)));
+        painter.line_segment([a, b], egui::Stroke::new(1.0, egui::Color32::from_rgb(180, 60, 60)));
     }
 
     if wmin_x <= 0.0 && wmax_x >= 0.0 {
         let a = transform.to_screen(0.0, wmin_y);
         let b = transform.to_screen(0.0, wmax_y);
-        painter.line_segment([a, b], Stroke::new(1.0, Color32::from_rgb(60, 180, 60)));
+        painter.line_segment([a, b], egui::Stroke::new(1.0, egui::Color32::from_rgb(60, 180, 60)));
     }
 }
 
-pub fn draw_work_area(painter: &Painter, transform: &CanvasTransform, machine: &MachineConfig) {
+pub fn draw_work_area(painter: &egui::Painter, transform: &CanvasTransform, machine: &MachineConfig) {
     let (w, h) = machine.work_area_mm;
     if w <= 0.0 || h <= 0.0 {
         return;
@@ -70,7 +68,7 @@ pub fn draw_work_area(painter: &Painter, transform: &CanvasTransform, machine: &
     painter.rect_stroke(
         rect,
         0.0,
-        Stroke::new(1.0, colors::WORK_AREA),
+        egui::Stroke::new(1.0, colors::WORK_AREA),
         egui::StrokeKind::Outside,
     );
 }
