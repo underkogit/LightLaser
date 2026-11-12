@@ -1,4 +1,5 @@
-use egui::{Rect, Vec2};
+use egui::{Rect, TextureHandle, Vec2};
+use std::collections::HashMap;
 
 use crate::core::vector::CurvePoint;
 use crate::ui::selection::HandleKind;
@@ -32,7 +33,6 @@ pub enum DragMode {
     },
 }
 
-#[derive(Debug)]
 pub struct CanvasState {
     pub zoom: f32,
     pub offset: Vec2,
@@ -40,6 +40,20 @@ pub struct CanvasState {
     pub pending_center: bool,
     pub hovered_layer: Option<usize>,
     pub drag: DragMode,
+    pub texture_cache: HashMap<String, TextureHandle>,
+}
+
+impl std::fmt::Debug for CanvasState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CanvasState")
+            .field("zoom", &self.zoom)
+            .field("offset", &self.offset)
+            .field("rect", &self.rect)
+            .field("pending_center", &self.pending_center)
+            .field("hovered_layer", &self.hovered_layer)
+            .field("drag", &self.drag)
+            .finish()
+    }
 }
 
 impl Default for CanvasState {
@@ -51,6 +65,7 @@ impl Default for CanvasState {
             pending_center: false,
             hovered_layer: None,
             drag: DragMode::None,
+            texture_cache: HashMap::new(),
         }
     }
 }

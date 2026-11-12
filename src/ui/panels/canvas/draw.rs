@@ -109,8 +109,13 @@ fn draw_dimensions(painter: &Painter, transform: &CanvasTransform, (w, h): (f64,
     );
 }
 
-pub fn render_layers(painter: &Painter, transform: &CanvasTransform, app: &LaserApp) {
-    let selection = &app.ui_state.selection;
+pub fn render_layers(
+    ui: &mut egui::Ui,
+    painter: &Painter,
+    transform: &CanvasTransform,
+    app: &mut LaserApp,
+) {
+    let selection = app.ui_state.selection.clone();
 
     for (i, layer) in app.project.layers.iter().enumerate() {
         if !layer.is_visible {
@@ -118,6 +123,7 @@ pub fn render_layers(painter: &Painter, transform: &CanvasTransform, app: &Laser
         }
         let layer_selected = selection.layer == Some(i);
         draw_layer(
+            ui,
             painter,
             transform,
             layer,
@@ -125,6 +131,7 @@ pub fn render_layers(painter: &Painter, transform: &CanvasTransform, app: &Laser
             selection.shape,
             selection.node,
             selection.handle,
+            &mut app.canvas.texture_cache,
         );
     }
 }
@@ -178,7 +185,9 @@ pub fn render_overlays(painter: &Painter, transform: &CanvasTransform, app: &Las
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_layer(
+    ui: &mut egui::Ui,
     painter: &Painter,
     transform: &CanvasTransform,
     layer: &Layer,
@@ -186,6 +195,7 @@ fn draw_layer(
     selected_shape: Option<usize>,
     selected_node: Option<usize>,
     selected_handle: Option<HandleKind>,
+    texture_cache: &mut std::collections::HashMap<String, egui::TextureHandle>,
 ) {
     if layer.is_vector() {
         for (si, shape) in layer.shapes.iter().enumerate() {
@@ -285,10 +295,53 @@ fn draw_layer(
     let p1 = transform.to_screen(max_x, min_y);
     let rect = Rect::from_two_pos(p0, p1);
 
-    let alpha = if layer_selected { 180 } else { 120 };
-    let color =
-        Color32::from_rgba_unmultiplied(layer.color[0], layer.color[1], layer.color[2], alpha);
-    painter.rect_filled(rect, 2.0, color);
+    let path = match &layer.source {
+        crate::core::layer::LayerSource::Image { path } => Some(std::path::PathBuf::from(path)),
+        crate::core::layer::LayerSource::Svg { path } => Some(std::path::PathBuf::from(path)),
+        _ => None,
+    };
+
+    if let Some(p) = path {
+        let key = p.to_string_lossy().to_string();
+        let texture = texture_cache.entry(key).or_insert_with(|| {
+            if let Ok(img) = image::open(&p) {
+                let rgba = img.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                let color_image = egui::ColorImage::from_rgba_unmultiplied(
+                    [w as usize, h as usize],
+                    rgba.as_raw(),
+                );
+                ui.ctx().load_texture(
+                    format!("layer_tex_{}", layer.name),
+                    color_image,
+                    egui::TextureOptions::LINEAR,
+                )
+            } else {
+                let color_image = egui::ColorImage::filled([1, 1], Color32::TRANSPARENT);
+                ui.ctx().load_texture(
+                    format!("layer_tex_fallback_{}", layer.name),
+                    color_image,
+                    egui::TextureOptions::LINEAR,
+                )
+            }
+        });
+
+        painter.image(
+            texture.id(),
+            rect,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            if layer_selected {
+                Color32::from_rgba_unmultiplied(255, 255, 255, 200)
+            } else {
+                Color32::WHITE
+            },
+        );
+    } else {
+        let alpha = if layer_selected { 180 } else { 120 };
+        let color =
+            Color32::from_rgba_unmultiplied(layer.color[0], layer.color[1], layer.color[2], alpha);
+        painter.rect_filled(rect, 2.0, color);
+    }
 
     if layer_selected {
         painter.rect_stroke(

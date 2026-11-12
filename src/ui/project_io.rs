@@ -4,7 +4,7 @@ use rust_i18n::t;
 
 use crate::core::{
     image::{extract_palette, load_image},
-    layer::{Layer, LayerSource, Project, PROJECT_VERSION, VectorShape},
+    layer::{Layer, LayerSource, PROJECT_VERSION, Project, VectorShape},
 };
 use crate::ui::LaserApp;
 
@@ -76,7 +76,7 @@ impl LaserApp {
         std::fs::write(path, content).map_err(|e| format!("write: {}", e))
     }
 
-    fn load_project_from(&mut self, path: &Path) -> Result<(), String> {
+    pub(crate) fn load_project_from(&mut self, path: &Path) -> Result<(), String> {
         let content = std::fs::read_to_string(path).map_err(|e| format!("read: {}", e))?;
         let project: Project = toml::from_str(&content).map_err(|e| format!("parse: {}", e))?;
 
@@ -105,19 +105,23 @@ impl LaserApp {
         };
 
         for path in paths {
-            match self.create_image_layers(&path) {
-                Ok(layers) => {
-                    for layer in layers {
-                        let name = layer.name.clone();
-                        self.project.add_layer(layer);
-                        log::info!("{}", t!("ui.info.layer_added", name = name));
-                    }
-                }
-                Err(e) => log::error!("{}", t!("ui.error.add_layer", e = e)),
-            }
+            self.add_image_from_path(&path);
         }
 
         self.center_view();
+    }
+
+    pub(crate) fn add_image_from_path(&mut self, path: &Path) {
+        match self.create_image_layers(path) {
+            Ok(layers) => {
+                for layer in layers {
+                    let name = layer.name.clone();
+                    self.project.add_layer(layer);
+                    log::info!("{}", t!("ui.info.layer_added", name = name));
+                }
+            }
+            Err(e) => log::error!("{}", t!("ui.error.add_layer", e = e)),
+        }
     }
 
     fn create_image_layers(&self, path: &Path) -> Result<Vec<Layer>, String> {
@@ -150,19 +154,16 @@ impl LaserApp {
             return Ok(layers);
         }
 
-        let max_colors = palette.len().min(8);
-        for (i, entry) in palette.iter().take(max_colors).enumerate() {
-            let mut layer = Layer::new(
-                format!("{} - {}", stem, i + 1),
-                entry.rgb,
-                LayerSource::Image {
-                    path: path.to_string_lossy().to_string(),
-                },
-            );
-            layer.set_bounds(0.0, 0.0, width_mm, height_mm);
-            layer.params.pixels_per_mm = ppm.max(1.0);
-            layers.push(layer);
-        }
+        let mut layer = Layer::new(
+            stem,
+            palette[0].rgb,
+            LayerSource::Image {
+                path: path.to_string_lossy().to_string(),
+            },
+        );
+        layer.set_bounds(0.0, 0.0, width_mm, height_mm);
+        layer.params.pixels_per_mm = ppm.max(1.0);
+        layers.push(layer);
 
         Ok(layers)
     }
@@ -176,24 +177,43 @@ impl LaserApp {
         };
 
         for path in paths {
-            match self.create_svg_layer(&path) {
-                Ok(layer) => {
-                    let name = layer.name.clone();
-                    self.project.add_layer(layer);
-                    log::info!("{}", t!("ui.info.layer_added", name = name));
-                }
-                Err(e) => log::error!("{}", t!("ui.error.add_layer", e = e)),
-            }
+            self.add_svg_from_path(&path);
         }
 
         self.center_view();
     }
 
-    fn create_svg_layer(&self, path: &Path) -> Result<Layer, String> {
-        let content = std::fs::read_to_string(path).map_err(|e| format!("svg read: {}", e))?;
-        if !content.contains("<svg") {
-            return Err("not an SVG file".to_string());
+    pub(crate) fn add_svg_from_path(&mut self, path: &Path) {
+        match self.create_svg_layer(path) {
+            Ok(layer) => {
+                let name = layer.name.clone();
+                self.project.add_layer(layer);
+                log::info!("{}", t!("ui.info.layer_added", name = name));
+            }
+            Err(e) => log::error!("{}", t!("ui.error.add_layer", e = e)),
         }
+    }
+
+    fn create_svg_layer(&self, path: &Path) -> Result<Layer, String> {
+        use resvg::usvg;
+        use tiny_skia::Pixmap;
+
+        let svg_data = std::fs::read(path).map_err(|e| format!("svg read: {}", e))?;
+        let opt = usvg::Options::default();
+        let tree =
+            usvg::Tree::from_data(&svg_data, &opt).map_err(|e| format!("svg parse: {}", e))?;
+
+        let size = tree.size();
+        let width_mm = size.width() as f64 * 25.4 / 96.0;
+        let height_mm = size.height() as f64 * 25.4 / 96.0;
+
+        let mut pixmap = Pixmap::new(size.width() as u32, size.height() as u32)
+            .ok_or("failed to create pixmap")?;
+        resvg::render(&tree, tiny_skia::Transform::default(), &mut pixmap.as_mut());
+
+        let image =
+            image::RgbaImage::from_raw(pixmap.width(), pixmap.height(), pixmap.data().to_vec())
+                .ok_or("failed to convert pixmap to image")?;
 
         let stem = path
             .file_stem()
@@ -209,7 +229,11 @@ impl LaserApp {
             },
         );
 
-        layer.set_bounds(0.0, 0.0, DEFAULT_LAYER_WIDTH_MM, DEFAULT_LAYER_WIDTH_MM);
+        layer.set_bounds(0.0, 0.0, width_mm, height_mm);
+        layer.params.pixels_per_mm = (pixmap.width() as f64 / width_mm).max(1.0);
+
+        let _ = image;
+
         Ok(layer)
     }
 
@@ -222,22 +246,26 @@ impl LaserApp {
         };
 
         for path in paths {
-            match self.create_gcode_layer(&path) {
-                Ok(layer) => {
-                    let name = layer.name.clone();
-                    self.project.add_layer(layer);
-                    log::info!("{}", t!("ui.info.layer_added", name = name));
-                }
-                Err(e) => log::error!("{}", t!("ui.error.add_layer", e = e)),
-            }
+            self.add_gcode_from_path(&path);
         }
 
         self.center_view();
     }
 
+    pub(crate) fn add_gcode_from_path(&mut self, path: &Path) {
+        match self.create_gcode_layer(path) {
+            Ok(layer) => {
+                let name = layer.name.clone();
+                self.project.add_layer(layer);
+                log::info!("{}", t!("ui.info.layer_added", name = name));
+            }
+            Err(e) => log::error!("{}", t!("ui.error.add_layer", e = e)),
+        }
+    }
+
     fn create_gcode_layer(&self, path: &Path) -> Result<Layer, String> {
-        let cmds = crate::core::gcode::parse_file(path)
-            .map_err(|e| format!("gcode parse: {}", e))?;
+        let cmds =
+            crate::core::gcode::parse_file(path).map_err(|e| format!("gcode parse: {}", e))?;
 
         let mut min_x = f64::INFINITY;
         let mut min_y = f64::INFINITY;

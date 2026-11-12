@@ -6,15 +6,11 @@ use std::sync::{Arc, Mutex};
 use rust_i18n::t;
 
 use crate::comm::{GrblEvent, GrblStatus, Streamer, StreamerState};
-use crate::core::layer::{Project, VectorShape};
+use crate::core::layer::Project;
 use crate::logger::LogEntry;
 use crate::ui::{
-    app_config::AppConfig,
-    history::History,
-    panels::canvas::CanvasState,
-    panels::right_panel::RightPanelState,
-    selection::Selection,
-    tools_state::ToolsState,
+    app_config::AppConfig, history::History, panels::canvas::CanvasState,
+    panels::right_panel::RightPanelState, selection::Selection, tools_state::ToolsState,
     widget::status_bar::StatusBar,
 };
 
@@ -169,6 +165,9 @@ impl eframe::App for LaserApp {
         let mut copy = false;
         let mut paste = false;
         let mut duplicate = false;
+        let mut save = false;
+        let mut save_as = false;
+        let mut dropped_paths: Vec<PathBuf> = Vec::new();
 
         ui.ctx().input(|i| {
             for event in &i.events {
@@ -179,16 +178,29 @@ impl eframe::App for LaserApp {
                     paste = true;
                 }
                 if let egui::Event::Key {
-                    key: egui::Key::D,
+                    key,
                     pressed: true,
                     modifiers,
                     ..
                 } = event
                 {
                     if modifiers.command {
-                        duplicate = true;
+                        match key {
+                            egui::Key::D => duplicate = true,
+                            egui::Key::S => {
+                                if modifiers.shift {
+                                    save_as = true;
+                                } else {
+                                    save = true;
+                                }
+                            }
+                            _ => {}
+                        }
                     }
                 }
+            }
+            for f in &i.raw.dropped_files {
+                dropped_paths.push(f.path().to_path_buf());
             }
         });
 
@@ -203,6 +215,48 @@ impl eframe::App for LaserApp {
         if duplicate {
             log::info!("Global trigger: Duplicate");
             self.duplicate_selection();
+        }
+        if save {
+            log::info!("Global trigger: Save");
+            self.save_project_interactive();
+        }
+        if save_as {
+            log::info!("Global trigger: Save As");
+            self.save_project_as_interactive();
+        }
+
+        for path in dropped_paths {
+            let ext = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            match ext.as_str() {
+                "png" | "jpg" | "jpeg" | "bmp" => {
+                    log::info!("Dropped image: {}", path.display());
+                    self.add_image_from_path(&path);
+                    self.center_view();
+                }
+                "svg" => {
+                    log::info!("Dropped svg: {}", path.display());
+                    self.add_svg_from_path(&path);
+                    self.center_view();
+                }
+                "nc" | "gcode" | "gbr" | "txt" => {
+                    log::info!("Dropped gcode: {}", path.display());
+                    self.add_gcode_from_path(&path);
+                    self.center_view();
+                }
+                "toml" => {
+                    log::info!("Dropped project: {}", path.display());
+                    let _ = self.load_project_from(&path);
+                    self.current_project_path = Some(path);
+                    self.center_view();
+                }
+                _ => {
+                    log::warn!("Dropped unsupported file: {}", path.display());
+                }
+            }
         }
 
         self.ui_top_bar(ui);
@@ -271,7 +325,10 @@ impl LaserApp {
         let clipboard = self.clipboard.clone();
 
         if let Some(mut layer_src) = clipboard {
-            log::info!("PASTE ATTEMPT: Found layer in memory with {} shapes", layer_src.shapes.len());
+            log::info!(
+                "PASTE ATTEMPT: Found layer in memory with {} shapes",
+                layer_src.shapes.len()
+            );
             self.push_history();
             let offset = self.duplicate_offset();
             for shape in &mut layer_src.shapes {

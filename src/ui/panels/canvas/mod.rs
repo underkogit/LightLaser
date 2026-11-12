@@ -21,7 +21,7 @@ impl LaserApp {
         let transform = crate::ui::CanvasTransform::new(rect, self.canvas.zoom, self.canvas.offset);
 
         draw::render_background(&painter, &transform, self);
-        draw::render_layers(&painter, &transform, self);
+        draw::render_layers(ui, &painter, &transform, self);
 
         if let Some(status) = &self.grbl_status {
             if let Some((x, y, _z)) = status.mpos {
