@@ -1,0 +1,383 @@
+use egui::Align;
+use rust_i18n::t;
+
+use crate::comm::{GrblState, StreamerCommand, StreamerState};
+use crate::ui::LaserApp;
+
+impl LaserApp {
+    pub(crate) fn ui_top_bar(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::top("top_bar")
+            .resizable(false)
+            .min_size(40.0)
+            .max_size(40.0)
+            .show(ui, |ui| {
+                ui.horizontal_centered(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+
+                    self.ui_top_menu(ui);
+                    ui.add_space(4.0);
+                    self.ui_top_job_controls(ui);
+                    ui.add_space(4.0);
+                    self.ui_top_jog_controls(ui);
+
+                    ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                        self.ui_top_status(ui);
+                        ui.add_space(8.0);
+                        self.ui_top_connection(ui);
+                    });
+                });
+            });
+    }
+
+    fn ui_top_menu(&mut self, ui: &mut egui::Ui) {
+        let file_label = t!("ui.menu.file").to_string();
+        let view_label = t!("ui.menu.view").to_string();
+        let help_label = t!("ui.menu.help").to_string();
+
+        ui.menu_button(file_label, |ui| {
+            if ui.button(t!("ui.menu.new_project")).clicked() {
+                self.new_project();
+                ui.close();
+            }
+            if ui.button(t!("ui.menu.open_project")).clicked() {
+                self.open_project_interactive();
+                ui.close();
+            }
+            if ui.button(t!("ui.menu.save_project")).clicked() {
+                self.save_project_interactive();
+                ui.close();
+            }
+            if ui.button(t!("ui.menu.save_project_as")).clicked() {
+                self.save_project_as_interactive();
+                ui.close();
+            }
+            ui.separator();
+            if ui.button(t!("ui.menu.add_image")).clicked() {
+                self.add_image_interactive();
+                ui.close();
+            }
+            if ui.button(t!("ui.menu.add_svg")).clicked() {
+                self.add_svg_interactive();
+                ui.close();
+            }
+            if ui.button(t!("ui.menu.add_gcode")).clicked() {
+                self.add_gcode_interactive();
+                ui.close();
+            }
+            ui.separator();
+            if ui.button(t!("ui.menu.export_gcode")).clicked() {
+                self.export_dialog_open = true;
+                ui.close();
+            }
+            ui.separator();
+            if ui.button(t!("ui.menu.exit")).clicked() {
+                ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        });
+
+        ui.menu_button(t!("ui.menu.edit").to_string(), |ui| {
+            if ui
+                .add_enabled(self.history.can_undo(), egui::Button::new(format!(
+                    "{} {}",
+                    egui_phosphor::regular::ARROW_U_UP_LEFT,
+                    t!("ui.menu.undo")
+                )))
+                .clicked()
+            {
+                self.undo();
+                ui.close();
+            }
+            if ui
+                .add_enabled(self.history.can_redo(), egui::Button::new(format!(
+                    "{} {}",
+                    egui_phosphor::regular::ARROW_U_UP_RIGHT,
+                    t!("ui.menu.redo")
+                )))
+                .clicked()
+            {
+                self.redo();
+                ui.close();
+            }
+        });
+
+        ui.menu_button(view_label, |ui| {
+            if ui
+                .button(format!(
+                    "{} {}",
+                    egui_phosphor::regular::MAGNIFYING_GLASS_PLUS,
+                    t!("ui.menu.zoom_in")
+                ))
+                .clicked()
+            {
+                self.zoom_in();
+                ui.close();
+            }
+            if ui
+                .button(format!(
+                    "{} {}",
+                    egui_phosphor::regular::MAGNIFYING_GLASS_MINUS,
+                    t!("ui.menu.zoom_out")
+                ))
+                .clicked()
+            {
+                self.zoom_out();
+                ui.close();
+            }
+            if ui
+                .button(format!(
+                    "{} {}",
+                    egui_phosphor::regular::ARROWS_OUT,
+                    t!("ui.menu.center_view")
+                ))
+                .clicked()
+            {
+                self.center_view();
+                ui.close();
+            }
+            ui.separator();
+            ui.checkbox(&mut self.app_config.show_grid, t!("ui.menu.show_grid"));
+            ui.checkbox(&mut self.app_config.show_axes, t!("ui.menu.show_axes"));
+            ui.checkbox(
+                &mut self.app_config.show_work_area,
+                t!("ui.menu.show_work_area"),
+            );
+            ui.separator();
+            if ui
+                .checkbox(&mut self.tools.snap_enabled, t!("ui.menu.snap_to_grid"))
+                .changed()
+            {
+                self.tools.snap_mm = self.app_config.grid_step_mm;
+            }
+            ui.add_enabled_ui(self.tools.snap_enabled, |ui| {
+                let mut step = self.tools.snap_mm;
+                if ui
+                    .add(
+                        egui::DragValue::new(&mut step)
+                            .speed(0.1)
+                            .range(0.01..=100.0)
+                            .suffix(" mm"),
+                    )
+                    .changed()
+                {
+                    self.tools.snap_mm = step;
+                }
+            });
+        });
+
+        ui.menu_button(help_label, |ui| {
+            ui.label(format!("LightLazer v{}", env!("CARGO_PKG_VERSION")));
+        });
+    }
+
+    fn ui_top_job_controls(&mut self, ui: &mut egui::Ui) {
+        let is_running = self.streamer_state == StreamerState::Running;
+        let is_paused = self.streamer_state == StreamerState::Paused;
+        let is_idle = self.streamer_state == StreamerState::Idle;
+
+        if ui
+            .add_enabled(
+                is_idle,
+                egui::Button::new(format!(
+                    "{} {}",
+                    egui_phosphor::regular::PLAY,
+                    t!("ui.button.start")
+                )),
+            )
+            .clicked()
+        {
+            self.start_job();
+        }
+
+        if is_running {
+            if ui
+                .button(format!(
+                    "{} {}",
+                    egui_phosphor::regular::PAUSE,
+                    t!("ui.button.pause")
+                ))
+                .clicked()
+            {
+                self.streamer.send(StreamerCommand::Pause);
+                self.streamer_state = StreamerState::Paused;
+            }
+        } else if is_paused {
+            if ui
+                .button(format!(
+                    "{} {}",
+                    egui_phosphor::regular::PLAY,
+                    t!("ui.button.resume")
+                ))
+                .clicked()
+            {
+                self.streamer.send(StreamerCommand::Resume);
+                self.streamer_state = StreamerState::Running;
+            }
+        }
+
+        if ui
+            .add_enabled(
+                is_running || is_paused,
+                egui::Button::new(format!(
+                    "{} {}",
+                    egui_phosphor::regular::STOP,
+                    t!("ui.button.stop")
+                )),
+            )
+            .clicked()
+        {
+            self.streamer.send(StreamerCommand::Stop);
+        }
+
+        if self.job_progress.1 > 0 {
+            let (sent, total) = self.job_progress;
+            let frac = sent as f32 / total as f32;
+            ui.add(
+                egui::ProgressBar::new(frac)
+                    .desired_width(100.0)
+                    .show_percentage(),
+            )
+                .on_hover_text(format!("{} / {}", sent, total));
+        }
+    }
+
+    fn ui_top_jog_controls(&mut self, ui: &mut egui::Ui) {
+        let connected = self.grbl_status.is_some();
+        let step = self.project.machine.jog_step;
+        let feed = self.project.machine.jog_feed;
+
+        if ui
+            .add_enabled(
+                connected,
+                egui::Button::new(format!("{}", egui_phosphor::regular::HOUSE)),
+            )
+            .on_hover_text(t!("ui.button.home"))
+            .clicked()
+        {
+            self.streamer.send(StreamerCommand::Home);
+        }
+
+        if ui
+            .add_enabled(
+                connected,
+                egui::Button::new(format!("{}", egui_phosphor::regular::LOCK_OPEN)),
+            )
+            .on_hover_text(t!("ui.button.unlock"))
+            .clicked()
+        {
+            self.streamer.send(StreamerCommand::Unlock);
+        }
+
+        if ui
+            .add_enabled(
+                connected,
+                egui::Button::new(format!("{}", egui_phosphor::regular::ARROW_LEFT)),
+            )
+            .clicked()
+        {
+            self.streamer.send(StreamerCommand::Jog {
+                dx: -step,
+                dy: 0.0,
+                feed,
+            });
+        }
+
+        if ui
+            .add_enabled(
+                connected,
+                egui::Button::new(format!("{}", egui_phosphor::regular::ARROW_UP)),
+            )
+            .clicked()
+        {
+            self.streamer.send(StreamerCommand::Jog {
+                dx: 0.0,
+                dy: step,
+                feed,
+            });
+        }
+
+        if ui
+            .add_enabled(
+                connected,
+                egui::Button::new(format!("{}", egui_phosphor::regular::ARROW_DOWN)),
+            )
+            .clicked()
+        {
+            self.streamer.send(StreamerCommand::Jog {
+                dx: 0.0,
+                dy: -step,
+                feed,
+            });
+        }
+
+        if ui
+            .add_enabled(
+                connected,
+                egui::Button::new(format!("{}", egui_phosphor::regular::ARROW_RIGHT)),
+            )
+            .clicked()
+        {
+            self.streamer.send(StreamerCommand::Jog {
+                dx: step,
+                dy: 0.0,
+                feed,
+            });
+        }
+
+        ui.add_sized(
+            [60.0, ui.spacing().interact_size.y],
+            egui::DragValue::new(&mut self.project.machine.jog_step)
+                .speed(0.1)
+                .range(0.1..=100.0)
+                .suffix(" mm"),
+        )
+            .on_hover_text(t!("ui.tooltip.jog_step"));
+    }
+
+    fn ui_top_connection(&mut self, ui: &mut egui::Ui) {
+        let connected = self.grbl_status.is_some();
+
+        let (label, color) = if connected {
+            (t!("ui.label.connected").to_string(), egui::Color32::GREEN)
+        } else {
+            (t!("ui.label.disconnected").to_string(), egui::Color32::RED)
+        };
+
+        ui.colored_label(color, format!("● {}", label));
+
+        let btn = if connected {
+            egui::Button::new(t!("ui.button.disconnect"))
+        } else {
+            egui::Button::new(t!("ui.button.connect"))
+        };
+
+        if ui.add(btn).clicked() {
+            if connected {
+                self.streamer.send(StreamerCommand::Disconnect);
+            } else {
+                self.connection_dialog_open = true;
+            }
+        }
+    }
+
+    fn ui_top_status(&mut self, ui: &mut egui::Ui) {
+        let (state_label, mpos) = match &self.grbl_status {
+            Some(s) => (s.state.label(), s.mpos),
+            None => (GrblState::Unknown.label(), None),
+        };
+
+        let state_color = match self.grbl_status.as_ref().map(|s| s.state) {
+            Some(GrblState::Alarm) => egui::Color32::RED,
+            Some(GrblState::Run) | Some(GrblState::Jog) => egui::Color32::YELLOW,
+            Some(GrblState::Idle) => egui::Color32::GREEN,
+            _ => egui::Color32::GRAY,
+        };
+
+        ui.colored_label(state_color, state_label);
+        ui.label("|");
+        if let Some((x, y, z)) = mpos {
+            ui.label(format!("X:{:.2} Y:{:.2} Z:{:.2}", x, y, z));
+        } else {
+            ui.label("X:— Y:— Z:—");
+        }
+    }
+}
