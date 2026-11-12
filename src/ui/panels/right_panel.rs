@@ -1,60 +1,331 @@
 use egui::{Align, Layout};
 use rust_i18n::t;
 
+use crate::comm::{StreamerCommand, StreamerState};
 use crate::core::layer::{LayerParams, LayerSource};
+use crate::ui::LaserApp;
 use crate::ui::panels::canvas::duplicate_selected;
 use crate::ui::selection::Selection;
-use crate::ui::LaserApp;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RightPanelTab {
+    #[default]
+    Layers,
+    Connection,
+    Properties,
+}
+
+pub struct RightPanelState {
+    pub active_tab: RightPanelTab,
+}
+
+impl Default for RightPanelState {
+    fn default() -> Self {
+        Self {
+            active_tab: RightPanelTab::Layers,
+        }
+    }
+}
 
 impl LaserApp {
     pub(crate) fn ui_right_panel(&mut self, ui: &mut egui::Ui) {
+        egui::Panel::bottom("machine_control_bottom")
+            .resizable(false)
+            .show_inside(ui, |ui| {
+                self.ui_machine_controls(ui);
+            });
+
+        let mut active_tab = self.right_panel_state.active_tab;
+
+        ui.horizontal(|ui| {
+            ui.selectable_value(
+                &mut active_tab,
+                RightPanelTab::Layers,
+                t!("ui.label.layers").to_string(),
+            );
+            ui.selectable_value(
+                &mut active_tab,
+                RightPanelTab::Connection,
+                t!("ui.label.connection.title").to_string(),
+            );
+            ui.selectable_value(&mut active_tab, RightPanelTab::Properties, "Properties");
+        });
+        ui.separator();
+
+        self.right_panel_state.active_tab = active_tab;
+
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.add_space(4.0);
-            ui.heading(t!("ui.label.layers").to_string());
-            ui.separator();
-
-            self.ui_layer_list(ui);
-            ui.add_space(8.0);
-            ui.separator();
-
-            let selected = self.ui_state.selection.layer;
-            if let Some(idx) = selected {
-                if idx < self.project.layers.len() {
-                    self.ui_selection_actions(ui);
-                    ui.separator();
-                    self.ui_layer_params(ui, idx);
-                } else {
-                    self.ui_state.selection.clear();
+            match self.right_panel_state.active_tab {
+                RightPanelTab::Layers => {
+                    self.ui_layer_list(ui);
                 }
-            } else {
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new(t!("ui.label.no_layer_selected").to_string())
-                        .italics()
-                        .weak(),
-                );
+                RightPanelTab::Connection => {
+                    self.ui_connection_params(ui);
+                }
+                RightPanelTab::Properties => {
+                    let selected = self.ui_state.selection.layer;
+                    if let Some(idx) = selected {
+                        if idx < self.project.layers.len() {
+                            self.ui_selection_actions(ui);
+                            ui.separator();
+                            self.ui_layer_params(ui, idx);
+                        } else {
+                            self.ui_state.selection.clear();
+                            ui.label(t!("ui.label.no_layer_selected").to_string());
+                        }
+                    } else {
+                        ui.label(
+                            egui::RichText::new(t!("ui.label.no_layer_selected").to_string())
+                                .italics()
+                                .weak(),
+                        );
+                    }
+                }
             }
         });
+    }
+
+    fn ui_machine_controls(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(4.0);
+        ui.separator();
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new("Machine Control").strong());
+        ui.add_space(4.0);
+
+        let connected = self.grbl_status.is_some();
+        let is_running = self.streamer_state == StreamerState::Running;
+        let is_paused = self.streamer_state == StreamerState::Paused;
+        let is_idle = self.streamer_state == StreamerState::Idle;
+
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    is_idle,
+                    egui::Button::new(format!(
+                        "{} {}",
+                        egui_phosphor::regular::PLAY,
+                        t!("ui.button.start")
+                    )),
+                )
+                .clicked()
+            {
+                self.start_job();
+            }
+
+            if is_running {
+                if ui
+                    .button(format!(
+                        "{} {}",
+                        egui_phosphor::regular::PAUSE,
+                        t!("ui.button.pause")
+                    ))
+                    .clicked()
+                {
+                    self.streamer.send(StreamerCommand::Pause);
+                    self.streamer_state = StreamerState::Paused;
+                }
+            } else if is_paused {
+                if ui
+                    .button(format!(
+                        "{} {}",
+                        egui_phosphor::regular::PLAY,
+                        t!("ui.button.resume")
+                    ))
+                    .clicked()
+                {
+                    self.streamer.send(StreamerCommand::Resume);
+                    self.streamer_state = StreamerState::Running;
+                }
+            }
+
+            if ui
+                .add_enabled(
+                    is_running || is_paused,
+                    egui::Button::new(format!(
+                        "{} {}",
+                        egui_phosphor::regular::STOP,
+                        t!("ui.button.stop")
+                    )),
+                )
+                .clicked()
+            {
+                self.streamer.send(StreamerCommand::Stop);
+            }
+        });
+
+        if self.job_progress.1 > 0 {
+            let (sent, total) = self.job_progress;
+            let frac = sent as f32 / total as f32;
+            ui.add(
+                egui::ProgressBar::new(frac)
+                    .desired_width(ui.available_width())
+                    .show_percentage(),
+            )
+            .on_hover_text(format!("{} / {}", sent, total));
+        }
+
+        ui.add_space(4.0);
+
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(
+                    connected,
+                    egui::Button::new(format!("{}", egui_phosphor::regular::HOUSE)),
+                )
+                .on_hover_text(t!("ui.button.home"))
+                .clicked()
+            {
+                self.streamer.send(StreamerCommand::Home);
+            }
+
+            if ui
+                .add_enabled(
+                    connected,
+                    egui::Button::new(format!("{}", egui_phosphor::regular::LOCK_OPEN)),
+                )
+                .on_hover_text(t!("ui.button.unlock"))
+                .clicked()
+            {
+                self.streamer.send(StreamerCommand::Unlock);
+            }
+
+            let step = self.project.machine.jog_step;
+            let feed = self.project.machine.jog_feed;
+
+            if ui
+                .add_enabled(
+                    connected,
+                    egui::Button::new(format!("{}", egui_phosphor::regular::ARROW_LEFT)),
+                )
+                .clicked()
+            {
+                self.streamer.send(StreamerCommand::Jog {
+                    dx: -step,
+                    dy: 0.0,
+                    feed,
+                });
+            }
+
+            if ui
+                .add_enabled(
+                    connected,
+                    egui::Button::new(format!("{}", egui_phosphor::regular::ARROW_UP)),
+                )
+                .clicked()
+            {
+                self.streamer.send(StreamerCommand::Jog {
+                    dx: 0.0,
+                    dy: step,
+                    feed,
+                });
+            }
+
+            if ui
+                .add_enabled(
+                    connected,
+                    egui::Button::new(format!("{}", egui_phosphor::regular::ARROW_DOWN)),
+                )
+                .clicked()
+            {
+                self.streamer.send(StreamerCommand::Jog {
+                    dx: 0.0,
+                    dy: -step,
+                    feed,
+                });
+            }
+
+            if ui
+                .add_enabled(
+                    connected,
+                    egui::Button::new(format!("{}", egui_phosphor::regular::ARROW_RIGHT)),
+                )
+                .clicked()
+            {
+                self.streamer.send(StreamerCommand::Jog {
+                    dx: step,
+                    dy: 0.0,
+                    feed,
+                });
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.add_sized(
+                [80.0, ui.spacing().interact_size.y],
+                egui::DragValue::new(&mut self.project.machine.jog_step)
+                    .speed(0.1)
+                    .range(0.1..=100.0)
+                    .suffix(" mm"),
+            )
+            .on_hover_text(t!("ui.tooltip.jog_step"));
+        });
+        ui.add_space(4.0);
+    }
+
+    fn ui_connection_params(&mut self, ui: &mut egui::Ui) {
+        let ports: Vec<String> = serialport::available_ports()
+            .map(|list| list.into_iter().map(|p| p.port_name).collect())
+            .unwrap_or_default();
+
+        ui.horizontal(|ui| {
+            ui.label(t!("ui.label.connection.port").to_string());
+            egui::ComboBox::from_id_salt("port_combo_panel")
+                .selected_text(if self.project.machine.port.is_empty() {
+                    "—".to_string()
+                } else {
+                    self.project.machine.port.clone()
+                })
+                .width(180.0)
+                .show_ui(ui, |ui| {
+                    for p in &ports {
+                        ui.selectable_value(&mut self.project.machine.port, p.clone(), p);
+                    }
+                });
+            if ui.button("⟳").clicked() {
+                ui.ctx().request_repaint();
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.label(t!("ui.label.connection.baudrate").to_string());
+            egui::ComboBox::from_id_salt("baudrate_combo_panel")
+                .selected_text(self.project.machine.baudrate.to_string())
+                .width(180.0)
+                .show_ui(ui, |ui| {
+                    for b in [9600u32, 19200, 38400, 57600, 115200] {
+                        ui.selectable_value(&mut self.project.machine.baudrate, b, b.to_string());
+                    }
+                });
+        });
+
+        ui.add_space(8.0);
+        ui.checkbox(
+            &mut self.project.machine.enable_laser_mode,
+            t!("ui.label.connection.laser_mode").to_string(),
+        );
+        ui.checkbox(
+            &mut self.project.machine.soft_limits,
+            t!("ui.label.connection.soft_limits").to_string(),
+        );
+        ui.checkbox(
+            &mut self.project.machine.homing_cycle,
+            t!("ui.label.connection.homing_cycle").to_string(),
+        );
     }
 
     fn ui_selection_actions(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             if ui
-                .button(format!(
-                    "{} Duplicate",
-                    egui_phosphor::regular::COPY
-                ))
+                .button(format!("{} Duplicate", egui_phosphor::regular::COPY))
                 .on_hover_text("Ctrl+D")
                 .clicked()
             {
                 duplicate_selected(self);
             }
             if ui
-                .button(format!(
-                    "{} Delete",
-                    egui_phosphor::regular::TRASH
-                ))
+                .button(format!("{} Delete", egui_phosphor::regular::TRASH))
                 .on_hover_text("Del")
                 .clicked()
             {
@@ -134,10 +405,7 @@ impl LaserApp {
 
                         if ui
                             .add(
-                                egui::Button::new(format!(
-                                    "{}",
-                                    egui_phosphor::regular::ARROW_UP
-                                ))
+                                egui::Button::new(format!("{}", egui_phosphor::regular::ARROW_UP))
                                     .small(),
                             )
                             .clicked()
@@ -150,7 +418,7 @@ impl LaserApp {
                                     "{}",
                                     egui_phosphor::regular::ARROW_DOWN
                                 ))
-                                    .small(),
+                                .small(),
                             )
                             .clicked()
                         {
@@ -257,14 +525,14 @@ impl LaserApp {
                 .range(1.0..=20000.0)
                 .suffix(" mm/min"),
         )
-            .on_hover_text(t!("ui.label.feed_rate"));
+        .on_hover_text(t!("ui.label.feed_rate"));
 
         ui.add(
             egui::DragValue::new(&mut new_params.passes)
                 .speed(0.1)
                 .range(1..=100),
         )
-            .on_hover_text(t!("ui.label.passes"));
+        .on_hover_text(t!("ui.label.passes"));
 
         ui.checkbox(&mut new_params.dynamic_power, t!("ui.label.dynamic_power"));
 

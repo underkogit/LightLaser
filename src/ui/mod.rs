@@ -11,7 +11,8 @@ use crate::logger::LogEntry;
 use crate::ui::{
     app_config::AppConfig,
     history::History,
-    panels::canvas::CanvasState,
+    panels::canvas::{duplicate_selected, copy_selection, paste_selection, CanvasState},
+    panels::right_panel::RightPanelState,
     selection::Selection,
     tools_state::ToolsState,
     widget::status_bar::StatusBar,
@@ -43,6 +44,7 @@ pub struct LaserApp {
     pub(crate) status_bar: StatusBar,
     pub(crate) tools: ToolsState,
     pub(crate) history: History,
+    pub(crate) right_panel_state: RightPanelState,
 
     pub(crate) streamer: Streamer,
     pub(crate) grbl_status: Option<GrblStatus>,
@@ -77,6 +79,7 @@ impl LaserApp {
             status_bar: StatusBar::default(),
             tools: ToolsState::default(),
             history: History::default(),
+            right_panel_state: RightPanelState::default(),
             streamer,
             grbl_status: None,
             streamer_state: StreamerState::Idle,
@@ -239,6 +242,21 @@ impl LaserApp {
         if cmd && ctx.input(|i| i.key_pressed(egui::Key::E)) {
             log::info!("Shortcut: Export G-code");
             self.export_dialog_open = true;
+        }
+
+        if cmd && ctx.input(|i| i.key_pressed(egui::Key::D)) {
+            log::info!("Shortcut: Duplicate");
+            duplicate_selected(self);
+        }
+
+        if cmd && ctx.input(|i| i.key_pressed(egui::Key::C)) {
+            log::info!("Shortcut: Copy");
+            copy_selection(self);
+        }
+
+        if cmd && ctx.input(|i| i.key_pressed(egui::Key::V)) {
+            log::info!("Shortcut: Paste");
+            paste_selection(self);
         }
     }
 }

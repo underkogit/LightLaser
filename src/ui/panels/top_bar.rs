@@ -1,7 +1,7 @@
 use egui::Align;
 use rust_i18n::t;
 
-use crate::comm::{GrblState, StreamerCommand, StreamerState};
+use crate::comm::{GrblState, StreamerState};
 use crate::ui::LaserApp;
 
 impl LaserApp {
@@ -15,10 +15,6 @@ impl LaserApp {
                     ui.spacing_mut().item_spacing.x = 8.0;
 
                     self.ui_top_menu(ui);
-                    ui.add_space(4.0);
-                    self.ui_top_job_controls(ui);
-                    ui.add_space(4.0);
-                    self.ui_top_jog_controls(ui);
 
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
                         self.ui_top_status(ui);
@@ -169,170 +165,6 @@ impl LaserApp {
         });
     }
 
-    fn ui_top_job_controls(&mut self, ui: &mut egui::Ui) {
-        let is_running = self.streamer_state == StreamerState::Running;
-        let is_paused = self.streamer_state == StreamerState::Paused;
-        let is_idle = self.streamer_state == StreamerState::Idle;
-
-        if ui
-            .add_enabled(
-                is_idle,
-                egui::Button::new(format!(
-                    "{} {}",
-                    egui_phosphor::regular::PLAY,
-                    t!("ui.button.start")
-                )),
-            )
-            .clicked()
-        {
-            self.start_job();
-        }
-
-        if is_running {
-            if ui
-                .button(format!(
-                    "{} {}",
-                    egui_phosphor::regular::PAUSE,
-                    t!("ui.button.pause")
-                ))
-                .clicked()
-            {
-                self.streamer.send(StreamerCommand::Pause);
-                self.streamer_state = StreamerState::Paused;
-            }
-        } else if is_paused {
-            if ui
-                .button(format!(
-                    "{} {}",
-                    egui_phosphor::regular::PLAY,
-                    t!("ui.button.resume")
-                ))
-                .clicked()
-            {
-                self.streamer.send(StreamerCommand::Resume);
-                self.streamer_state = StreamerState::Running;
-            }
-        }
-
-        if ui
-            .add_enabled(
-                is_running || is_paused,
-                egui::Button::new(format!(
-                    "{} {}",
-                    egui_phosphor::regular::STOP,
-                    t!("ui.button.stop")
-                )),
-            )
-            .clicked()
-        {
-            self.streamer.send(StreamerCommand::Stop);
-        }
-
-        if self.job_progress.1 > 0 {
-            let (sent, total) = self.job_progress;
-            let frac = sent as f32 / total as f32;
-            ui.add(
-                egui::ProgressBar::new(frac)
-                    .desired_width(100.0)
-                    .show_percentage(),
-            )
-                .on_hover_text(format!("{} / {}", sent, total));
-        }
-    }
-
-    fn ui_top_jog_controls(&mut self, ui: &mut egui::Ui) {
-        let connected = self.grbl_status.is_some();
-        let step = self.project.machine.jog_step;
-        let feed = self.project.machine.jog_feed;
-
-        if ui
-            .add_enabled(
-                connected,
-                egui::Button::new(format!("{}", egui_phosphor::regular::HOUSE)),
-            )
-            .on_hover_text(t!("ui.button.home"))
-            .clicked()
-        {
-            self.streamer.send(StreamerCommand::Home);
-        }
-
-        if ui
-            .add_enabled(
-                connected,
-                egui::Button::new(format!("{}", egui_phosphor::regular::LOCK_OPEN)),
-            )
-            .on_hover_text(t!("ui.button.unlock"))
-            .clicked()
-        {
-            self.streamer.send(StreamerCommand::Unlock);
-        }
-
-        if ui
-            .add_enabled(
-                connected,
-                egui::Button::new(format!("{}", egui_phosphor::regular::ARROW_LEFT)),
-            )
-            .clicked()
-        {
-            self.streamer.send(StreamerCommand::Jog {
-                dx: -step,
-                dy: 0.0,
-                feed,
-            });
-        }
-
-        if ui
-            .add_enabled(
-                connected,
-                egui::Button::new(format!("{}", egui_phosphor::regular::ARROW_UP)),
-            )
-            .clicked()
-        {
-            self.streamer.send(StreamerCommand::Jog {
-                dx: 0.0,
-                dy: step,
-                feed,
-            });
-        }
-
-        if ui
-            .add_enabled(
-                connected,
-                egui::Button::new(format!("{}", egui_phosphor::regular::ARROW_DOWN)),
-            )
-            .clicked()
-        {
-            self.streamer.send(StreamerCommand::Jog {
-                dx: 0.0,
-                dy: -step,
-                feed,
-            });
-        }
-
-        if ui
-            .add_enabled(
-                connected,
-                egui::Button::new(format!("{}", egui_phosphor::regular::ARROW_RIGHT)),
-            )
-            .clicked()
-        {
-            self.streamer.send(StreamerCommand::Jog {
-                dx: step,
-                dy: 0.0,
-                feed,
-            });
-        }
-
-        ui.add_sized(
-            [60.0, ui.spacing().interact_size.y],
-            egui::DragValue::new(&mut self.project.machine.jog_step)
-                .speed(0.1)
-                .range(0.1..=100.0)
-                .suffix(" mm"),
-        )
-            .on_hover_text(t!("ui.tooltip.jog_step"));
-    }
-
     fn ui_top_connection(&mut self, ui: &mut egui::Ui) {
         let connected = self.grbl_status.is_some();
 
@@ -352,7 +184,7 @@ impl LaserApp {
 
         if ui.add(btn).clicked() {
             if connected {
-                self.streamer.send(StreamerCommand::Disconnect);
+                self.streamer.send(crate::comm::StreamerCommand::Disconnect);
             } else {
                 self.connection_dialog_open = true;
             }

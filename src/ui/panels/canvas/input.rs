@@ -10,6 +10,8 @@ use crate::ui::{
 
 use super::state::DragMode;
 
+static CLIPBOARD: std::sync::Mutex<Option<VectorShape>> = std::sync::Mutex::new(None);
+
 pub fn handle_interaction(
     app: &mut LaserApp,
     ui: &mut egui::Ui,
@@ -17,6 +19,7 @@ pub fn handle_interaction(
     transform: &CanvasTransform,
 ) {
     let Some(pos) = response.hover_pos() else {
+        app.status_bar.set_mouse_world(f64::NAN, f64::NAN);
         return;
     };
     let (wx, wy) = transform.to_world(pos);
@@ -91,10 +94,6 @@ fn handle_select_input(
 
     if ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
         delete_selected(app);
-    }
-
-    if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::D)) {
-        duplicate_selected(app);
     }
 }
 
@@ -502,6 +501,71 @@ pub(crate) fn duplicate_selected(app: &mut LaserApp) {
         handle: None,
     };
 }
+
+pub(crate) fn copy_selection(app: &mut LaserApp) {
+    let sel = app.ui_state.selection.clone();
+    let Some(li) = sel.layer else { return };
+    let Some(layer) = app.project.layers.get(li) else { return };
+
+    if let Some(si) = sel.shape {
+        if let Some(shape) = layer.shapes.get(si) {
+            if let Ok(mut clipboard) = CLIPBOARD.lock() {
+                *clipboard = Some(shape.clone());
+            }
+        }
+    }
+}
+
+pub(crate) fn paste_selection(app: &mut LaserApp) {
+    let clipboard_shape = {
+        if let Ok(clipboard) = CLIPBOARD.lock() {
+            clipboard.clone()
+        } else {
+            None
+        }
+    };
+
+    if let Some(shape_src) = clipboard_shape {
+        app.push_history();
+        let offset = app.duplicate_offset();
+        let mut new_shape = shape_src;
+        for n in &mut new_shape.nodes {
+            n.translate(offset, offset);
+        }
+
+        let insert_at = app
+            .ui_state
+            .selection
+            .layer
+            .filter(|&i| i < app.project.layers.len() && app.project.layers[i].is_vector());
+
+        if let Some(idx) = insert_at {
+            app.project.layers[idx].shapes.push(new_shape);
+            app.project.layers[idx].recompute_bounds();
+            let si = app.project.layers[idx].shapes.len() - 1;
+            app.ui_state.selection = Selection {
+                layer: Some(idx),
+                shape: Some(si),
+                node: None,
+                handle: None,
+            };
+        } else {
+            let color = colors::LAYER_DEFAULT;
+            let mut layer = Layer::new("Vector".to_string(), color, LayerSource::Vector);
+            layer.shapes.push(new_shape);
+            layer.recompute_bounds();
+            app.project.add_layer(layer);
+            let new_idx = app.project.layers.len() - 1;
+            app.ui_state.selection = Selection {
+                layer: Some(new_idx),
+                shape: Some(0),
+                node: None,
+                handle: None,
+            };
+        }
+    }
+}
+
 impl LaserApp {
     fn duplicate_offset(&self) -> f64 {
         let step = if self.tools.snap_enabled && self.tools.snap_mm > 0.0 {

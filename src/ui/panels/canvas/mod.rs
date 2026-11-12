@@ -2,8 +2,8 @@ mod draw;
 mod input;
 mod state;
 
+pub(crate) use input::{copy_selection, duplicate_selected, paste_selection};
 pub use state::CanvasState;
-pub(crate) use input::duplicate_selected;
 
 use crate::ui::LaserApp;
 
@@ -41,7 +41,7 @@ impl LaserApp {
         draw::render_overlays(&painter, &transform, self);
 
         egui::Area::new(egui::Id::new("canvas_controls"))
-            .fixed_pos(egui::pos2(rect.max.x - 110.0, rect.max.y - 40.0))
+            .fixed_pos(egui::pos2(rect.max.x - 120.0, rect.max.y - 40.0))
             .show(ui.ctx(), |ui| {
                 ui.horizontal(|ui| {
                     if ui.button("−").clicked() {
@@ -55,6 +55,24 @@ impl LaserApp {
                     }
                 });
             });
+
+        let painter_clone = painter.clone();
+        let mouse_x = self.status_bar.mouse_x();
+        let mouse_y = self.status_bar.mouse_y();
+        let color = if mouse_x.is_finite() && mouse_y.is_finite() {
+            egui::Color32::LIGHT_GRAY
+        } else {
+            egui::Color32::DARK_GRAY
+        };
+        let text = format!("X: {:.3} mm, Y: {:.3} mm", mouse_x, mouse_y);
+
+        painter_clone.text(
+            egui::pos2(rect.min.x + 10.0, rect.max.y - 20.0),
+            egui::Align2::LEFT_TOP,
+            text,
+            egui::FontId::monospace(14.0),
+            color,
+        );
     }
 
     pub(crate) fn zoom_in(&mut self) {
