@@ -61,7 +61,9 @@ fn main() {
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(format!("LightLazer - v{VERSION}"))
-            .with_inner_size([app_config.window_width, app_config.window_height]),
+            .with_inner_size([1200.0, 720.0])
+            .with_resizable(true)
+            .with_position([100.0, 100.0]),
         ..eframe::NativeOptions::default()
     };
 
@@ -81,7 +83,6 @@ fn main() {
                 style.spacing.interact_size = egui::vec2(44.0, 32.0);
                 style.spacing.icon_width = 16.0;
                 style.spacing.icon_width_inner = 10.0;
-
             });
 
             Ok(Box::new(LaserApp::new(

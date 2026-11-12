@@ -4,7 +4,6 @@ use rust_i18n::t;
 use crate::comm::{StreamerCommand, StreamerState};
 use crate::core::layer::{LayerParams, LayerSource};
 use crate::ui::LaserApp;
-use crate::ui::panels::canvas::duplicate_selected;
 use crate::ui::selection::Selection;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -88,8 +87,7 @@ impl LaserApp {
 
     fn ui_machine_controls(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
-        ui.separator();
-        ui.add_space(4.0);
+
         ui.label(egui::RichText::new("Machine Control").strong());
         ui.add_space(4.0);
 
@@ -162,7 +160,7 @@ impl LaserApp {
                     .desired_width(ui.available_width())
                     .show_percentage(),
             )
-            .on_hover_text(format!("{} / {}", sent, total));
+                .on_hover_text(format!("{} / {}", sent, total));
         }
 
         ui.add_space(4.0);
@@ -258,7 +256,7 @@ impl LaserApp {
                     .range(0.1..=100.0)
                     .suffix(" mm"),
             )
-            .on_hover_text(t!("ui.tooltip.jog_step"));
+                .on_hover_text(t!("ui.tooltip.jog_step"));
         });
         ui.add_space(4.0);
     }
@@ -322,7 +320,7 @@ impl LaserApp {
                 .on_hover_text("Ctrl+D")
                 .clicked()
             {
-                duplicate_selected(self);
+                self.duplicate_selection();
             }
             if ui
                 .button(format!("{} Delete", egui_phosphor::regular::TRASH))
@@ -418,7 +416,7 @@ impl LaserApp {
                                     "{}",
                                     egui_phosphor::regular::ARROW_DOWN
                                 ))
-                                .small(),
+                                    .small(),
                             )
                             .clicked()
                         {
@@ -525,14 +523,14 @@ impl LaserApp {
                 .range(1.0..=20000.0)
                 .suffix(" mm/min"),
         )
-        .on_hover_text(t!("ui.label.feed_rate"));
+            .on_hover_text(t!("ui.label.feed_rate"));
 
         ui.add(
             egui::DragValue::new(&mut new_params.passes)
                 .speed(0.1)
                 .range(1..=100),
         )
-        .on_hover_text(t!("ui.label.passes"));
+            .on_hover_text(t!("ui.label.passes"));
 
         ui.checkbox(&mut new_params.dynamic_power, t!("ui.label.dynamic_power"));
 

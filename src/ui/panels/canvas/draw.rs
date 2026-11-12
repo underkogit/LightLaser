@@ -22,7 +22,91 @@ pub fn render_background(painter: &Painter, transform: &CanvasTransform, app: &L
     }
     if app.app_config.show_work_area {
         draw_work_area(painter, transform, &app.project.machine);
+        draw_dimensions(painter, transform, app.project.machine.work_area_mm);
     }
+}
+
+fn draw_dimensions(painter: &Painter, transform: &CanvasTransform, (w, h): (f64, f64)) {
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+
+    let text_color = Color32::from_rgb(180, 180, 200);
+    let line_color = Color32::from_rgb(120, 120, 150);
+    let stroke = Stroke::new(1.0, line_color);
+    let font = egui::FontId::proportional(12.0);
+
+    let p_bot_left = transform.to_screen(0.0, 0.0);
+    let p_bot_right = transform.to_screen(w, 0.0);
+    let p_top_left = transform.to_screen(0.0, h);
+
+    let offset_y = 15.0;
+    let tick_size = 5.0;
+
+    let y_line = p_bot_left.y + offset_y;
+    painter.line_segment(
+        [
+            egui::pos2(p_bot_left.x, y_line),
+            egui::pos2(p_bot_right.x, y_line),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            egui::pos2(p_bot_left.x, y_line - tick_size),
+            egui::pos2(p_bot_left.x, y_line + tick_size),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            egui::pos2(p_bot_right.x, y_line - tick_size),
+            egui::pos2(p_bot_right.x, y_line + tick_size),
+        ],
+        stroke,
+    );
+
+    let w_text = format!("{:.1} mm", w);
+    painter.text(
+        egui::pos2(p_bot_left.x + (p_bot_right.x - p_bot_left.x) / 2.0, y_line),
+        egui::Align2::CENTER_CENTER,
+        w_text,
+        font.clone(),
+        text_color,
+    );
+
+    let offset_x = 15.0;
+    let x_line = p_bot_left.x - offset_x;
+    painter.line_segment(
+        [
+            egui::pos2(x_line, p_bot_left.y),
+            egui::pos2(x_line, p_top_left.y),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            egui::pos2(x_line - tick_size, p_bot_left.y),
+            egui::pos2(x_line + tick_size, p_bot_left.y),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            egui::pos2(x_line - tick_size, p_top_left.y),
+            egui::pos2(x_line + tick_size, p_top_left.y),
+        ],
+        stroke,
+    );
+
+    let h_text = format!("{:.1} mm", h);
+    painter.text(
+        egui::pos2(x_line, p_bot_left.y + (p_top_left.y - p_bot_left.y) / 2.0),
+        egui::Align2::CENTER_CENTER,
+        h_text,
+        font,
+        text_color,
+    );
 }
 
 pub fn render_layers(painter: &Painter, transform: &CanvasTransform, app: &LaserApp) {

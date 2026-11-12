@@ -6,12 +6,12 @@ use std::sync::{Arc, Mutex};
 use rust_i18n::t;
 
 use crate::comm::{GrblEvent, GrblStatus, Streamer, StreamerState};
-use crate::core::layer::Project;
+use crate::core::layer::{Project, VectorShape};
 use crate::logger::LogEntry;
 use crate::ui::{
     app_config::AppConfig,
     history::History,
-    panels::canvas::{duplicate_selected, copy_selection, paste_selection, CanvasState},
+    panels::canvas::CanvasState,
     panels::right_panel::RightPanelState,
     selection::Selection,
     tools_state::ToolsState,
@@ -59,6 +59,8 @@ pub struct LaserApp {
 
     pub(crate) connection_dialog_open: bool,
     pub(crate) export_dialog_open: bool,
+
+    pub(crate) clipboard: Option<crate::core::layer::Layer>,
 }
 
 impl LaserApp {
@@ -91,6 +93,7 @@ impl LaserApp {
             config_folder,
             connection_dialog_open: false,
             export_dialog_open: false,
+            clipboard: None,
         }
     }
 
@@ -163,7 +166,44 @@ impl eframe::App for LaserApp {
         self.app_config.window_width = screen_rect.width();
         self.app_config.window_height = screen_rect.height();
 
-        self.handle_shortcuts(ui.ctx());
+        let mut copy = false;
+        let mut paste = false;
+        let mut duplicate = false;
+
+        ui.ctx().input(|i| {
+            for event in &i.events {
+                if let egui::Event::Copy = event {
+                    copy = true;
+                }
+                if let egui::Event::Paste(_) = event {
+                    paste = true;
+                }
+                if let egui::Event::Key {
+                    key: egui::Key::D,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } = event
+                {
+                    if modifiers.command {
+                        duplicate = true;
+                    }
+                }
+            }
+        });
+
+        if copy {
+            log::info!("Global trigger: Copy");
+            self.copy_selection();
+        }
+        if paste {
+            log::info!("Global trigger: Paste");
+            self.paste_selection();
+        }
+        if duplicate {
+            log::info!("Global trigger: Duplicate");
+            self.duplicate_selection();
+        }
 
         self.ui_top_bar(ui);
         self.ui_bottom_bar(ui);
@@ -200,63 +240,125 @@ impl eframe::App for LaserApp {
 }
 
 impl LaserApp {
-    fn handle_shortcuts(&mut self, ctx: &egui::Context) {
-        let cmd = ctx.input(|i| i.modifiers.command);
-        let shift = ctx.input(|i| i.modifiers.shift);
+    fn copy_selection(&mut self) {
+        let sel = self.ui_state.selection.clone();
+        let Some(li) = sel.layer else {
+            log::warn!("COPY FAILED: No layer selected");
+            return;
+        };
+        let Some(layer) = self.project.layers.get(li) else {
+            log::warn!("COPY FAILED: Layer {} not found", li);
+            return;
+        };
 
-        if cmd && ctx.input(|i| i.key_pressed(egui::Key::Z)) {
-            if shift {
-                log::info!("Shortcut: Redo (Ctrl+Shift+Z)");
-                self.redo();
+        if let Some(si) = sel.shape {
+            if let Some(shape) = layer.shapes.get(si) {
+                let mut layer_clone = layer.clone();
+                layer_clone.shapes = vec![shape.clone()];
+                layer_clone.recompute_bounds();
+                self.clipboard = Some(layer_clone);
+                log::info!("COPY SUCCESS: Shape {} from layer {} copied", si, li);
             } else {
-                log::info!("Shortcut: Undo (Ctrl+Z)");
-                self.undo();
+                log::warn!("COPY FAILED: Shape {} not found in layer {}", si, li);
+            }
+        } else {
+            self.clipboard = Some(layer.clone());
+            log::info!("COPY SUCCESS: Layer {} copied", li);
+        }
+    }
+
+    fn paste_selection(&mut self) {
+        let clipboard = self.clipboard.clone();
+
+        if let Some(mut layer_src) = clipboard {
+            log::info!("PASTE ATTEMPT: Found layer in memory with {} shapes", layer_src.shapes.len());
+            self.push_history();
+            let offset = self.duplicate_offset();
+            for shape in &mut layer_src.shapes {
+                for n in &mut shape.nodes {
+                    n.translate(offset, offset);
+                }
+            }
+            layer_src.recompute_bounds();
+            layer_src.name = format!("{} copy", layer_src.name);
+            self.project.add_layer(layer_src);
+            let new_idx = self.project.layers.len() - 1;
+            self.ui_state.selection = Selection {
+                layer: Some(new_idx),
+                shape: None,
+                node: None,
+                handle: None,
+            };
+            log::info!("PASTE SUCCESS: Layer pasted as index {}", new_idx);
+        } else {
+            log::warn!("PASTE FAILED: Memory clipboard is empty");
+        }
+    }
+
+    fn duplicate_selection(&mut self) {
+        let sel = self.ui_state.selection.clone();
+        let Some(li) = sel.layer else {
+            log::warn!("DUPLICATE FAILED: No layer selected");
+            return;
+        };
+        let Some(layer_src) = self.project.layers.get(li) else {
+            log::warn!("DUPLICATE FAILED: Layer {} not found", li);
+            return;
+        };
+
+        if let Some(si) = sel.shape {
+            let Some(shape_src) = layer_src.shapes.get(si).cloned() else {
+                log::warn!("DUPLICATE FAILED: Shape {} not found", si);
+                return;
+            };
+            self.push_history();
+            let offset = self.duplicate_offset();
+            let mut new_shape = shape_src;
+            for n in &mut new_shape.nodes {
+                n.translate(offset, offset);
+            }
+            if let Some(layer_dst) = self.project.layers.get_mut(li) {
+                layer_dst.shapes.push(new_shape);
+                layer_dst.recompute_bounds();
+                let new_si = layer_dst.shapes.len() - 1;
+                self.ui_state.selection = Selection {
+                    layer: Some(li),
+                    shape: Some(new_si),
+                    node: None,
+                    handle: None,
+                };
+                log::info!("DUPLICATE SUCCESS: Shape {} duplicated", si);
+            }
+            return;
+        }
+
+        let mut new_layer = layer_src.clone();
+        new_layer.name = format!("{} copy", new_layer.name);
+        self.push_history();
+        let offset = self.duplicate_offset();
+        for shape in &mut new_layer.shapes {
+            for n in &mut shape.nodes {
+                n.translate(offset, offset);
             }
         }
+        new_layer.recompute_bounds();
+        self.project.add_layer(new_layer);
+        let new_idx = self.project.layers.len() - 1;
+        self.ui_state.selection = Selection {
+            layer: Some(new_idx),
+            shape: None,
+            node: None,
+            handle: None,
+        };
+        log::info!("DUPLICATE SUCCESS: Layer {} duplicated", li);
+    }
 
-        if cmd && ctx.input(|i| i.key_pressed(egui::Key::Y)) {
-            log::info!("Shortcut: Redo (Ctrl+Y)");
-            self.redo();
-        }
-
-        if cmd && ctx.input(|i| i.key_pressed(egui::Key::S)) {
-            if shift {
-                log::info!("Shortcut: Save As");
-                self.save_project_as_interactive();
-            } else {
-                log::info!("Shortcut: Save");
-                self.save_project_interactive();
-            }
-        }
-
-        if cmd && ctx.input(|i| i.key_pressed(egui::Key::O)) {
-            log::info!("Shortcut: Open");
-            self.open_project_interactive();
-        }
-
-        if cmd && ctx.input(|i| i.key_pressed(egui::Key::N)) {
-            log::info!("Shortcut: New Project");
-            self.new_project();
-        }
-
-        if cmd && ctx.input(|i| i.key_pressed(egui::Key::E)) {
-            log::info!("Shortcut: Export G-code");
-            self.export_dialog_open = true;
-        }
-
-        if cmd && ctx.input(|i| i.key_pressed(egui::Key::D)) {
-            log::info!("Shortcut: Duplicate");
-            duplicate_selected(self);
-        }
-
-        if cmd && ctx.input(|i| i.key_pressed(egui::Key::C)) {
-            log::info!("Shortcut: Copy");
-            copy_selection(self);
-        }
-
-        if cmd && ctx.input(|i| i.key_pressed(egui::Key::V)) {
-            log::info!("Shortcut: Paste");
-            paste_selection(self);
-        }
+    fn duplicate_offset(&self) -> f64 {
+        let step = if self.tools.snap_enabled && self.tools.snap_mm > 0.0 {
+            self.tools.snap_mm
+        } else {
+            1.0
+        };
+        step.max(0.5)
     }
 }

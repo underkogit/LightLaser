@@ -2,7 +2,6 @@ mod draw;
 mod input;
 mod state;
 
-pub(crate) use input::{copy_selection, duplicate_selected, paste_selection};
 pub use state::CanvasState;
 
 use crate::ui::LaserApp;
