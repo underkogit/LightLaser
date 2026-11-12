@@ -9,15 +9,15 @@ use crate::{
     ui::{LaserApp, app_config::AppConfig},
 };
 
-use eframe;
 use crate::i18n_backend::FileBackend;
+use eframe;
 
 mod comm;
 mod core;
 mod dirs;
+mod i18n_backend;
 mod logger;
 mod ui;
-mod i18n_backend;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 

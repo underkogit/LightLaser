@@ -10,7 +10,7 @@ use super::state::SegmentCacheEntry;
 pub fn layer_cache_key(layer: &Layer) -> Option<String> {
     match &layer.source {
         LayerSource::Image { path } => Some(format!(
-            "img::{}::{}::{}::{}::{}::{}::{}",
+            "img::{}::{}::{}::{}::{}::{}::{}::{}::{}",
             path,
             layer.params.pixels_per_mm,
             layer.params.threshold,
@@ -18,9 +18,11 @@ pub fn layer_cache_key(layer: &Layer) -> Option<String> {
             layer.params.power_percent,
             layer.params.feed_rate,
             layer.params.passes,
+            layer.mirror_x,
+            layer.mirror_y,
         )),
         LayerSource::Svg { path } => Some(format!(
-            "svg::{}::{:?}::{}::{}::{}::{}::{}::{}::{}",
+            "svg::{}::{:?}::{}::{}::{}::{}::{}::{}::{}::{}::{}",
             path,
             layer.params.engrave_mode,
             layer.params.pixels_per_mm,
@@ -30,8 +32,19 @@ pub fn layer_cache_key(layer: &Layer) -> Option<String> {
             layer.params.feed_rate,
             layer.params.passes,
             layer.bounds.map(|b| format!("{:?}", b)).unwrap_or_default(),
+            layer.mirror_x,
+            layer.mirror_y,
         )),
-        LayerSource::Gcode { path } => Some(format!("gcode::{}", path)),
+        LayerSource::Gcode { path } => Some(format!(
+            "gcode::{}::{}::{}::{}",
+            path,
+            layer.mirror_x,
+            layer.mirror_y,
+            layer
+                .mirror_center
+                .map(|c| format!("{:?}", c))
+                .unwrap_or_default(),
+        )),
         LayerSource::Vector => None,
     }
 }
@@ -44,39 +57,10 @@ pub fn get_or_build<'a>(
 
     if !cache.contains_key(&key) {
         let segments = build_segments(layer);
-        let bounds = segments_bounds(&segments);
-        cache.insert(
-            key.clone(),
-            SegmentCacheEntry {
-                key: key.clone(),
-                segments,
-                bounds,
-            },
-        );
+        cache.insert(key.clone(), SegmentCacheEntry { segments });
     }
 
     cache.get(&key)
-}
-
-fn segments_bounds(segments: &[(f64, f64, f64, f64)]) -> Option<(f64, f64, f64, f64)> {
-    if segments.is_empty() {
-        return None;
-    }
-    let mut min_x = f64::INFINITY;
-    let mut min_y = f64::INFINITY;
-    let mut max_x = f64::NEG_INFINITY;
-    let mut max_y = f64::NEG_INFINITY;
-    for (x0, y0, x1, y1) in segments {
-        min_x = min_x.min(*x0).min(*x1);
-        min_y = min_y.min(*y0).min(*y1);
-        max_x = max_x.max(*x0).max(*x1);
-        max_y = max_y.max(*y0).max(*y1);
-    }
-    if !min_x.is_finite() {
-        None
-    } else {
-        Some((min_x, min_y, max_x, max_y))
-    }
 }
 
 fn build_segments(layer: &Layer) -> Vec<(f64, f64, f64, f64)> {
@@ -158,12 +142,16 @@ fn build_segments(layer: &Layer) -> Vec<(f64, f64, f64, f64)> {
                     .collect()
             }
         }
-        LayerSource::Gcode { path } => parse_gcode(Path::new(path)),
+        LayerSource::Gcode { path } => {
+            let raw = parse_gcode_raw(Path::new(path));
+            let transformed = transform_gcode(raw, layer);
+            normalize_gcode(transformed)
+        }
         LayerSource::Vector => Vec::new(),
     }
 }
 
-fn parse_gcode(path: &Path) -> Vec<(f64, f64, f64, f64)> {
+fn parse_gcode_raw(path: &Path) -> Vec<(f64, f64, f64, f64)> {
     let Ok(content) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -212,20 +200,64 @@ fn parse_gcode(path: &Path) -> Vec<(f64, f64, f64, f64)> {
         cur = (px, py);
     }
 
+    raw
+}
+
+fn transform_gcode(
+    raw: Vec<(f64, f64, f64, f64)>,
+    layer: &Layer,
+) -> Vec<(f64, f64, f64, f64)> {
     if raw.is_empty() {
         return raw;
     }
 
+    let Some(center) = layer.mirror_center else {
+        return raw;
+    };
+
+    if !layer.mirror_x && !layer.mirror_y {
+        return raw;
+    }
+
+    raw.into_iter()
+        .map(|(x0, y0, x1, y1)| {
+            let mut ax = x0;
+            let mut ay = y0;
+            let mut bx = x1;
+            let mut by = y1;
+            if layer.mirror_x {
+                ax = 2.0 * center[0] - ax;
+                bx = 2.0 * center[0] - bx;
+            }
+            if layer.mirror_y {
+                ay = 2.0 * center[1] - ay;
+                by = 2.0 * center[1] - by;
+            }
+            (ax, ay, bx, by)
+        })
+        .collect()
+}
+
+fn normalize_gcode(mut segs: Vec<(f64, f64, f64, f64)>) -> Vec<(f64, f64, f64, f64)> {
+    if segs.is_empty() {
+        return segs;
+    }
+
     let mut min_x = f64::INFINITY;
     let mut min_y = f64::INFINITY;
-    for (x0, y0, x1, y1) in &raw {
+    for (x0, y0, x1, y1) in &segs {
         min_x = min_x.min(*x0).min(*x1);
         min_y = min_y.min(*y0).min(*y1);
     }
 
-    raw.into_iter()
-        .map(|(x0, y0, x1, y1)| (x0 - min_x, y0 - min_y, x1 - min_x, y1 - min_y))
-        .collect()
+    for s in &mut segs {
+        s.0 -= min_x;
+        s.1 -= min_y;
+        s.2 -= min_x;
+        s.3 -= min_y;
+    }
+
+    segs
 }
 
 fn layer_origin(layer: &Layer) -> (f64, f64) {

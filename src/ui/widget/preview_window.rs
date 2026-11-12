@@ -11,7 +11,6 @@ impl LaserApp {
     pub(crate) fn open_preview(&mut self) {
         self.canvas.preview_window.open = true;
         self.canvas.preview_window.pending = true;
-        self.canvas.preview_window.pending_fit = true;
     }
 
     pub(crate) fn ui_preview_window(&mut self, ctx: &egui::Context) {
@@ -27,6 +26,8 @@ impl LaserApp {
             .resizable(true)
             .default_size([800.0, 600.0])
             .min_size([400.0, 300.0])
+            .default_pos(egui::pos2(60.0, 60.0))
+            .collapsible(true)
             .show(ctx, |ui| {
                 let panel_height = 64.0;
                 let canvas_height = (ui.available_height() - panel_height).max(50.0);
@@ -40,7 +41,6 @@ impl LaserApp {
                 if self.canvas.preview_window.pending {
                     rebuild_preview(self);
                     self.canvas.preview_window.pending = false;
-                    self.canvas.preview_window.pending_fit = true;
                 }
 
                 if self.canvas.preview_window.pending_fit {
@@ -65,7 +65,14 @@ impl LaserApp {
                     self.canvas.preview_window.zoom = new;
                 }
 
-                draw_preview_grid(&painter, rect, &self.canvas.preview_window);
+                draw_preview_grid_lines(
+                    &painter,
+                    rect,
+                    &self.canvas.preview_window,
+                    self.app_config.grid_step_mm,
+                );
+                draw_preview_axes(&painter, rect, &self.canvas.preview_window);
+                draw_preview_bounds(&painter, rect, &self.canvas.preview_window);
                 draw_preview_lines(&painter, rect, &self.canvas.preview_window);
 
                 ui.separator();
@@ -286,51 +293,111 @@ fn build_layer_segments(layer: &Layer) -> Vec<(f64, f64, f64, f64)> {
             }
         }
         LayerSource::Gcode { path } => {
-            let Ok(content) = std::fs::read_to_string(path) else {
-                return Vec::new();
-            };
+            let raw = parse_gcode_raw(std::path::Path::new(path));
+            let transformed = transform_gcode(raw, layer);
+            let segs = normalize_gcode(transformed);
             let ox = layer.offset[0];
             let oy = layer.offset[1];
-            let mut out = Vec::new();
-            let mut cur = (0.0f64, 0.0f64);
-            let mut mode_rapid = false;
-            for line in content.lines() {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with(';') {
-                    continue;
-                }
-                let mut nx = None;
-                let mut ny = None;
-                let mut seen_g = None;
-                for tok in line.split_whitespace() {
-                    if let Some(rest) = tok.strip_prefix('G') {
-                        if let Ok(g) = rest.parse::<u32>() {
-                            seen_g = Some(g);
-                        }
-                    } else if let Some(rest) = tok.strip_prefix('X') {
-                        nx = rest.parse::<f64>().ok();
-                    } else if let Some(rest) = tok.strip_prefix('Y') {
-                        ny = rest.parse::<f64>().ok();
-                    }
-                }
-                if let Some(g) = seen_g {
-                    if g == 0 {
-                        mode_rapid = true;
-                    } else if g == 1 || g == 2 || g == 3 {
-                        mode_rapid = false;
-                    }
-                }
-                let px = nx.unwrap_or(cur.0);
-                let py = ny.unwrap_or(cur.1);
-                if !mode_rapid && (px != cur.0 || py != cur.1) {
-                    out.push((cur.0 + ox, cur.1 + oy, px + ox, py + oy));
-                }
-                cur = (px, py);
-            }
-            out
+            segs.into_iter()
+                .map(|(x0, y0, x1, y1)| (x0 + ox, y0 + oy, x1 + ox, y1 + oy))
+                .collect()
         }
         LayerSource::Vector => Vec::new(),
     }
+}
+
+fn parse_gcode_raw(path: &std::path::Path) -> Vec<(f64, f64, f64, f64)> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let mut raw = Vec::new();
+    let mut cur = (0.0f64, 0.0f64);
+    let mut mode_rapid = false;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with(';') {
+            continue;
+        }
+        let mut nx = None;
+        let mut ny = None;
+        let mut seen_g = None;
+        for tok in line.split_whitespace() {
+            if let Some(rest) = tok.strip_prefix('G') {
+                if let Ok(g) = rest.parse::<u32>() {
+                    seen_g = Some(g);
+                }
+            } else if let Some(rest) = tok.strip_prefix('X') {
+                nx = rest.parse::<f64>().ok();
+            } else if let Some(rest) = tok.strip_prefix('Y') {
+                ny = rest.parse::<f64>().ok();
+            }
+        }
+        if let Some(g) = seen_g {
+            if g == 0 {
+                mode_rapid = true;
+            } else if g == 1 || g == 2 || g == 3 {
+                mode_rapid = false;
+            }
+        }
+        let px = nx.unwrap_or(cur.0);
+        let py = ny.unwrap_or(cur.1);
+        if !mode_rapid && (px != cur.0 || py != cur.1) {
+            raw.push((cur.0, cur.1, px, py));
+        }
+        cur = (px, py);
+    }
+    raw
+}
+
+fn transform_gcode(
+    raw: Vec<(f64, f64, f64, f64)>,
+    layer: &Layer,
+) -> Vec<(f64, f64, f64, f64)> {
+    if raw.is_empty() {
+        return raw;
+    }
+    let Some(center) = layer.mirror_center else {
+        return raw;
+    };
+    if !layer.mirror_x && !layer.mirror_y {
+        return raw;
+    }
+    raw.into_iter()
+        .map(|(x0, y0, x1, y1)| {
+            let mut ax = x0;
+            let mut ay = y0;
+            let mut bx = x1;
+            let mut by = y1;
+            if layer.mirror_x {
+                ax = 2.0 * center[0] - ax;
+                bx = 2.0 * center[0] - bx;
+            }
+            if layer.mirror_y {
+                ay = 2.0 * center[1] - ay;
+                by = 2.0 * center[1] - by;
+            }
+            (ax, ay, bx, by)
+        })
+        .collect()
+}
+
+fn normalize_gcode(mut segs: Vec<(f64, f64, f64, f64)>) -> Vec<(f64, f64, f64, f64)> {
+    if segs.is_empty() {
+        return segs;
+    }
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    for (x0, y0, x1, y1) in &segs {
+        min_x = min_x.min(*x0).min(*x1);
+        min_y = min_y.min(*y0).min(*y1);
+    }
+    for s in &mut segs {
+        s.0 -= min_x;
+        s.1 -= min_y;
+        s.2 -= min_x;
+        s.3 -= min_y;
+    }
+    segs
 }
 
 fn fit_preview(pw: &mut crate::ui::panels::canvas::state::PreviewWindow, rect: Rect) {
@@ -364,7 +431,86 @@ fn to_screen(
     )
 }
 
-fn draw_preview_grid(
+fn to_world(
+    pw: &crate::ui::panels::canvas::state::PreviewWindow,
+    rect: Rect,
+    pos: Pos2,
+) -> (f64, f64) {
+    (
+        ((pos.x - rect.center().x - pw.offset.x) / pw.zoom) as f64,
+        (-(pos.y - rect.center().y - pw.offset.y) / pw.zoom) as f64,
+    )
+}
+
+fn draw_preview_grid_lines(
+    painter: &egui::Painter,
+    rect: Rect,
+    pw: &crate::ui::panels::canvas::state::PreviewWindow,
+    step_mm: f64,
+) {
+    if step_mm <= 0.0 || pw.zoom <= 0.0 {
+        return;
+    }
+
+    let step_px = step_mm as f32 * pw.zoom;
+    if step_px < 6.0 {
+        return;
+    }
+
+    let (wmin_x, wmin_y) = to_world(pw, rect, egui::pos2(rect.min.x, rect.max.y));
+    let (wmax_x, wmax_y) = to_world(pw, rect, egui::pos2(rect.max.x, rect.min.y));
+
+    let x_start = (wmin_x / step_mm).floor() as i64;
+    let x_end = (wmax_x / step_mm).ceil() as i64;
+    let y_start = (wmin_y / step_mm).floor() as i64;
+    let y_end = (wmax_y / step_mm).ceil() as i64;
+
+    let stroke = Stroke::new(1.0, Color32::from_rgb(40, 40, 50));
+
+    for i in x_start..=x_end {
+        let x = i as f64 * step_mm;
+        let top = to_screen(pw, rect, x, wmax_y);
+        let bot = to_screen(pw, rect, x, wmin_y);
+        painter.line_segment([top, bot], stroke);
+    }
+
+    for j in y_start..=y_end {
+        let y = j as f64 * step_mm;
+        let left = to_screen(pw, rect, wmin_x, y);
+        let right = to_screen(pw, rect, wmax_x, y);
+        painter.line_segment([left, right], stroke);
+    }
+}
+
+fn draw_preview_axes(
+    painter: &egui::Painter,
+    rect: Rect,
+    pw: &crate::ui::panels::canvas::state::PreviewWindow,
+) {
+    let origin = to_screen(pw, rect, 0.0, 0.0);
+
+    let x_end = to_screen(pw, rect, 100.0, 0.0);
+    let y_end = to_screen(pw, rect, 0.0, 100.0);
+
+    let x_color = Color32::from_rgb(200, 60, 60);
+    let y_color = Color32::from_rgb(60, 200, 60);
+
+    painter.line_segment([origin, x_end], Stroke::new(1.0, x_color));
+    painter.line_segment([origin, y_end], Stroke::new(1.0, y_color));
+
+    painter.circle_filled(origin, 4.0, Color32::from_rgb(255, 255, 0));
+    painter.circle_stroke(origin, 8.0, Stroke::new(1.0, Color32::from_rgb(255, 255, 0)));
+
+    painter.text(
+        origin + egui::vec2(10.0, 10.0),
+        egui::Align2::LEFT_TOP,
+        "0,0",
+        egui::FontId::monospace(12.0),
+        Color32::from_rgb(255, 255, 0),
+    );
+}
+
+fn draw_preview_bounds(
     painter: &egui::Painter,
     rect: Rect,
     pw: &crate::ui::panels::canvas::state::PreviewWindow,

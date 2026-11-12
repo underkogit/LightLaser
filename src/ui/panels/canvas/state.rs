@@ -1,4 +1,4 @@
-use egui::{Rect, TextureHandle, Vec2};
+use egui::{Rect, Vec2};
 use std::collections::HashMap;
 
 use crate::core::vector::CurvePoint;
@@ -18,7 +18,7 @@ pub enum DragMode {
     },
     MoveLayer {
         start_world: CurvePoint,
-        start_offset: [f64; 2],
+        start_states: Vec<LayerDragState>,
     },
     MoveNode {
         layer: usize,
@@ -31,6 +31,14 @@ pub enum DragMode {
         node: usize,
         handle: HandleKind,
     },
+}
+
+#[derive(Debug, Clone)]
+pub struct LayerDragState {
+    pub id: usize,
+    pub start_offset: [f64; 2],
+    pub start_bounds: Option<[f64; 4]>,
+    pub start_shape_nodes: Vec<Vec<crate::core::vector::PathNode>>,
 }
 
 pub struct PreviewWindow {
@@ -60,9 +68,7 @@ impl Default for PreviewWindow {
 }
 
 pub struct SegmentCacheEntry {
-    pub key: String,
     pub segments: Vec<(f64, f64, f64, f64)>,
-    pub bounds: Option<(f64, f64, f64, f64)>,
 }
 
 pub struct CanvasState {

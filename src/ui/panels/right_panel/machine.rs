@@ -15,6 +15,7 @@ impl LaserApp {
         let is_paused = self.streamer_state == StreamerState::Paused;
         let is_idle = self.streamer_state == StreamerState::Idle;
 
+        ui.label("Job");
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
@@ -84,6 +85,7 @@ impl LaserApp {
 
         ui.add_space(4.0);
 
+        ui.label("Machine");
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(
@@ -106,7 +108,12 @@ impl LaserApp {
             {
                 self.streamer.send(StreamerCommand::Unlock);
             }
+        });
 
+        ui.add_space(4.0);
+
+        ui.label("Jog");
+        ui.horizontal(|ui| {
             let step = self.project.machine.jog_step;
             let feed = self.project.machine.jog_feed;
 
@@ -167,6 +174,7 @@ impl LaserApp {
             }
         });
 
+        ui.label("Step");
         ui.horizontal(|ui| {
             ui.add_sized(
                 [80.0, ui.spacing().interact_size.y],
@@ -177,6 +185,19 @@ impl LaserApp {
             )
                 .on_hover_text(t!("ui.tooltip.jog_step"));
         });
+
+        ui.label("Feed rate");
+        ui.horizontal(|ui| {
+            ui.add_sized(
+                [100.0, ui.spacing().interact_size.y],
+                egui::DragValue::new(&mut self.project.machine.jog_feed)
+                    .speed(10.0)
+                    .range(1.0..=20000.0)
+                    .suffix(" mm/min"),
+            )
+                .on_hover_text("Jog feed rate");
+        });
+
         ui.add_space(4.0);
     }
 }

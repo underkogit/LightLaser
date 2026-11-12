@@ -4,13 +4,13 @@ use crate::core::layer::{Layer, LayerSource, VectorShape};
 use crate::core::tools::{
     ToolCommit, ToolContext, ToolEvent, ToolKind, ToolModifiers, ToolResponse,
 };
-use crate::core::vector::{CurvePoint, PathNode, VectorPath};
+use crate::core::vector::{CurvePoint, VectorPath};
 use crate::ui::{
     CanvasTransform, LaserApp, colors,
-    selection::{self, HandleKind, Selection},
+    selection::{self, HandleKind},
 };
 
-use super::state::DragMode;
+use super::state::{DragMode, LayerDragState};
 
 pub fn handle_interaction(
     app: &mut LaserApp,
@@ -273,10 +273,10 @@ fn handle_primary_down(
                         app.ui_state.selection.shape = Some(si);
                         app.ui_state.selection.node = None;
                         app.ui_state.selection.handle = None;
-                        let start_offset = layer.offset;
+                        let states = collect_drag_states(app);
                         app.canvas.drag = DragMode::MoveLayer {
                             start_world: world,
-                            start_offset,
+                            start_states: states,
                         };
                         picked = true;
                         changed = true;
@@ -296,10 +296,10 @@ fn handle_primary_down(
                     app.ui_state.selection.set_single_layer(li);
                 }
             }
-            let start_offset = app.project.layers[li].offset;
+            let states = collect_drag_states(app);
             app.canvas.drag = DragMode::MoveLayer {
                 start_world: world,
-                start_offset,
+                start_states: states,
             };
             changed = true;
         } else {
@@ -316,6 +316,36 @@ fn handle_primary_down(
     if changed {
         app.push_history();
     }
+}
+
+fn collect_drag_states(app: &LaserApp) -> Vec<LayerDragState> {
+    let mut ids = app.ui_state.selection.layers.clone();
+    if let Some(id) = app.ui_state.selection.layer {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    if ids.is_empty() {
+        return Vec::new();
+    }
+
+    let mut states = Vec::with_capacity(ids.len());
+    for id in ids {
+        if let Some(layer) = app.project.layers.get(id) {
+            let start_shape_nodes = layer
+                .shapes
+                .iter()
+                .map(|s| s.nodes.clone())
+                .collect::<Vec<_>>();
+            states.push(LayerDragState {
+                id,
+                start_offset: layer.offset,
+                start_bounds: layer.bounds,
+                start_shape_nodes,
+            });
+        }
+    }
+    states
 }
 
 fn apply_rubber_band_selection(
@@ -367,36 +397,49 @@ fn handle_drag(
     let raw_dx = delta.x as f64 / transform.scale as f64;
     let raw_dy = -(delta.y as f64) / transform.scale as f64;
 
-    match app.canvas.drag {
+    match &app.canvas.drag {
         DragMode::Pan => {
             app.canvas.offset += delta;
         }
         DragMode::MoveLayer {
             start_world,
-            start_offset,
+            start_states,
         } => {
-            let mut target_x = start_offset[0] + (world.x - start_world.x);
-            let mut target_y = start_offset[1] + (world.y - start_world.y);
+            let mut target_x = world.x - start_world.x;
+            let mut target_y = world.y - start_world.y;
             if app.tools.snap_enabled && app.tools.snap_mm > 0.0 {
                 let step = app.tools.snap_mm;
                 target_x = (target_x / step).round() * step;
                 target_y = (target_y / step).round() * step;
             }
-            let move_ids = if app.ui_state.selection.layers.is_empty() {
-                vec![app.ui_state.selection.layer.unwrap()]
-            } else {
-                app.ui_state.selection.layers.clone()
-            };
 
-            let ref_idx = app.ui_state.selection.layer.unwrap_or(0);
-            let ref_offset = app.project.layers[ref_idx].offset;
+            let states = start_states.clone();
+            for st in &states {
+                if let Some(layer) = app.project.layers.get_mut(st.id) {
+                    layer.offset[0] = st.start_offset[0] + target_x;
+                    layer.offset[1] = st.start_offset[1] + target_y;
 
-            let dx = target_x - ref_offset[0];
-            let dy = target_y - ref_offset[1];
+                    for (si, shape) in layer.shapes.iter_mut().enumerate() {
+                        if let Some(start_nodes) = st.start_shape_nodes.get(si) {
+                            for (ni, node) in shape.nodes.iter_mut().enumerate() {
+                                if let Some(start_node) = start_nodes.get(ni) {
+                                    node.point.x = start_node.point.x + target_x;
+                                    node.point.y = start_node.point.y + target_y;
+                                    node.handle_in.x = start_node.handle_in.x + target_x;
+                                    node.handle_in.y = start_node.handle_in.y + target_y;
+                                    node.handle_out.x = start_node.handle_out.x + target_x;
+                                    node.handle_out.y = start_node.handle_out.y + target_y;
+                                }
+                            }
+                        }
+                    }
 
-            for &id in &move_ids {
-                if let Some(layer) = app.project.layers.get_mut(id) {
-                    layer.translate(dx, dy);
+                    if let (Some(sb), Some(cb)) = (st.start_bounds, layer.bounds.as_mut()) {
+                        cb[0] = sb[0] + target_x;
+                        cb[1] = sb[1] + target_y;
+                        cb[2] = sb[2] + target_x;
+                        cb[3] = sb[3] + target_y;
+                    }
                 }
             }
         }
@@ -408,9 +451,9 @@ fn handle_drag(
                 tx = (tx / step).round() * step;
                 ty = (ty / step).round() * step;
             }
-            if let Some(l) = app.project.layers.get_mut(layer) {
-                if let Some(s) = l.shapes.get_mut(shape) {
-                    if let Some(n) = s.nodes.get_mut(node) {
+            if let Some(l) = app.project.layers.get_mut(*layer) {
+                if let Some(s) = l.shapes.get_mut(*shape) {
+                    if let Some(n) = s.nodes.get_mut(*node) {
                         let dx = tx - n.point.x;
                         let dy = ty - n.point.y;
                         if dx != 0.0 || dy != 0.0 {
@@ -434,9 +477,9 @@ fn handle_drag(
                 tx = (tx / step).round() * step;
                 ty = (ty / step).round() * step;
             }
-            if let Some(l) = app.project.layers.get_mut(layer) {
-                if let Some(s) = l.shapes.get_mut(shape) {
-                    if let Some(n) = s.nodes.get_mut(node) {
+            if let Some(l) = app.project.layers.get_mut(*layer) {
+                if let Some(s) = l.shapes.get_mut(*shape) {
+                    if let Some(n) = s.nodes.get_mut(*node) {
                         match handle {
                             HandleKind::Out => n.set_handle_out(tx, ty),
                             HandleKind::In => {
@@ -565,16 +608,15 @@ fn handle_tool_input(
 fn apply_commits(app: &mut LaserApp, commits: Vec<ToolCommit>) {
     let mut shapes: Vec<VectorShape> = Vec::new();
     for c in commits {
-        if let ToolCommit::Path(p) = c {
-            if p.nodes.len() < 2 {
-                continue;
-            }
-            shapes.push(VectorShape {
-                nodes: p.nodes,
-                stroke: p.stroke,
-                closed: p.closed,
-            });
+        let ToolCommit::Path(p) = c;
+        if p.nodes.len() < 2 {
+            continue;
         }
+        shapes.push(VectorShape {
+            nodes: p.nodes,
+            stroke: p.stroke,
+            closed: p.closed,
+        });
     }
 
     if shapes.is_empty() {

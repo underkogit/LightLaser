@@ -12,6 +12,7 @@ impl LaserApp {
         self.current_project_path = None;
         self.ui_state.selection.clear();
         self.canvas.texture_cache.clear();
+        self.canvas.segment_cache.clear();
         log::info!("New project");
     }
 
@@ -28,6 +29,7 @@ impl LaserApp {
         }
         self.current_project_path = Some(path.clone());
         self.canvas.texture_cache.clear();
+        self.canvas.segment_cache.clear();
         self.center_view();
         log::info!("{}", t!("ui.info.loaded_project", path = path.display()));
     }
@@ -108,7 +110,7 @@ impl LaserApp {
         else {
             return;
         };
-        self.add_image_from_path(&path);
+        self.add_svg_from_path(&path);
         self.center_view();
     }
 
@@ -151,6 +153,32 @@ impl LaserApp {
                 log::info!("{}", t!("ui.info.layer_added", name = name));
             }
             Err(e) => log::error!("{}", t!("ui.error.add_layer", e = e.to_string())),
+        }
+    }
+
+    pub(crate) fn add_svg_from_path(&mut self, path: &Path) {
+        match crate::core::image::rasterize_svg(path, 1024) {
+            Ok(svg) => {
+                let width_mm = svg.width_mm.max(1.0);
+                let height_mm = svg.height_mm.max(1.0);
+                let name = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("svg")
+                    .to_string();
+                let mut layer = Layer::new(
+                    name.clone(),
+                    crate::ui::colors::LAYER_DEFAULT,
+                    LayerSource::Svg {
+                        path: path.to_string_lossy().to_string(),
+                    },
+                );
+                layer.set_bounds(0.0, 0.0, width_mm, height_mm);
+                self.push_history();
+                self.project.add_layer(layer);
+                log::info!("{}", t!("ui.info.layer_added", name = name));
+            }
+            Err(e) => log::error!("{}", t!("ui.error.add_layer", e = e)),
         }
     }
 

@@ -244,7 +244,7 @@ impl eframe::App for LaserApp {
                 }
                 "svg" => {
                     log::info!("Dropped svg: {}", path.display());
-                    self.add_image_from_path(&path);
+                    self.add_svg_from_path(&path);
                     self.center_view();
                 }
                 "nc" | "gcode" | "gbr" | "txt" => {

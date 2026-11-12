@@ -78,7 +78,7 @@ impl LaserApp {
                                     "{}",
                                     egui_phosphor::regular::ARROW_DOWN
                                 ))
-                                .small(),
+                                    .small(),
                             )
                             .clicked()
                         {
@@ -113,15 +113,19 @@ impl LaserApp {
             }
         }
         if let Some(i) = to_move_up {
-            self.project.move_layer_up(i);
-            if new_selection == Some(i) {
-                new_selection = Some(i - 1);
+            if i > 0 {
+                self.project.move_layer_up(i);
+                if new_selection == Some(i) {
+                    new_selection = Some(i - 1);
+                }
             }
         }
         if let Some(i) = to_move_down {
-            self.project.move_layer_down(i);
-            if new_selection == Some(i) {
-                new_selection = Some(i + 1);
+            if i + 1 < self.project.layers.len() {
+                self.project.move_layer_down(i);
+                if new_selection == Some(i) {
+                    new_selection = Some(i + 1);
+                }
             }
         }
 

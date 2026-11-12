@@ -150,6 +150,15 @@ pub struct Layer {
 
     #[serde(default)]
     pub offset: [f64; 2],
+
+    #[serde(default)]
+    pub mirror_x: bool,
+
+    #[serde(default)]
+    pub mirror_y: bool,
+
+    #[serde(default)]
+    pub mirror_center: Option<[f64; 2]>,
 }
 
 impl Layer {
@@ -164,6 +173,9 @@ impl Layer {
             bounds: None,
             shapes: Vec::new(),
             offset: [0.0, 0.0],
+            mirror_x: false,
+            mirror_y: false,
+            mirror_center: None,
         }
     }
 
