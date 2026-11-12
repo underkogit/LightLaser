@@ -31,10 +31,7 @@ pub fn layer_cache_key(layer: &Layer) -> Option<String> {
             layer.params.passes,
             layer.bounds.map(|b| format!("{:?}", b)).unwrap_or_default(),
         )),
-        LayerSource::Gcode { path } => {
-            let len = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-            Some(format!("gcode::{}::{}", path, len))
-        }
+        LayerSource::Gcode { path } => Some(format!("gcode::{}", path)),
         LayerSource::Vector => None,
     }
 }
@@ -171,7 +168,7 @@ fn parse_gcode(path: &Path) -> Vec<(f64, f64, f64, f64)> {
         return Vec::new();
     };
 
-    let mut out = Vec::new();
+    let mut raw = Vec::new();
     let mut cur = (0.0f64, 0.0f64);
     let mut mode_rapid = false;
 
@@ -209,13 +206,26 @@ fn parse_gcode(path: &Path) -> Vec<(f64, f64, f64, f64)> {
         let py = ny.unwrap_or(cur.1);
 
         if !mode_rapid && (px != cur.0 || py != cur.1) {
-            out.push((cur.0, cur.1, px, py));
+            raw.push((cur.0, cur.1, px, py));
         }
 
         cur = (px, py);
     }
 
-    out
+    if raw.is_empty() {
+        return raw;
+    }
+
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    for (x0, y0, x1, y1) in &raw {
+        min_x = min_x.min(*x0).min(*x1);
+        min_y = min_y.min(*y0).min(*y1);
+    }
+
+    raw.into_iter()
+        .map(|(x0, y0, x1, y1)| (x0 - min_x, y0 - min_y, x1 - min_x, y1 - min_y))
+        .collect()
 }
 
 fn layer_origin(layer: &Layer) -> (f64, f64) {

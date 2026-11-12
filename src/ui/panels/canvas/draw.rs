@@ -1,6 +1,7 @@
 use egui::{Color32, Painter, Pos2, Rect, Stroke};
 
-use crate::core::layer::Layer;
+use crate::core::image::rasterize_svg;
+use crate::core::layer::{Layer, LayerSource};
 use crate::core::vector::VectorPath;
 use crate::ui::selection::HandleKind;
 use crate::ui::{
@@ -9,7 +10,7 @@ use crate::ui::{
 };
 
 use super::cache;
-use super::state::DragMode;
+use super::state::{DragMode, SegmentCacheEntry};
 
 pub fn render_background(painter: &Painter, transform: &CanvasTransform, app: &LaserApp) {
     let rect = transform.rect;
@@ -111,7 +112,7 @@ fn draw_dimensions(painter: &Painter, transform: &CanvasTransform, (w, h): (f64,
 }
 
 pub fn render_layers(
-    _ui: &mut egui::Ui,
+    ui: &mut egui::Ui,
     painter: &Painter,
     transform: &CanvasTransform,
     app: &mut LaserApp,
@@ -124,6 +125,7 @@ pub fn render_layers(
         }
         let layer_selected = selection.is_layer_selected(i);
         draw_layer(
+            ui,
             painter,
             transform,
             layer,
@@ -131,6 +133,7 @@ pub fn render_layers(
             selection.shape,
             selection.node,
             selection.handle,
+            &mut app.canvas.texture_cache,
             &mut app.canvas.segment_cache,
         );
     }
@@ -185,8 +188,18 @@ pub fn render_overlays(painter: &Painter, transform: &CanvasTransform, app: &Las
     }
 }
 
+#[inline]
+fn segment_visible(a: Pos2, b: Pos2, view: Rect, pad: f32) -> bool {
+    let min_x = a.x.min(b.x) - pad;
+    let max_x = a.x.max(b.x) + pad;
+    let min_y = a.y.min(b.y) - pad;
+    let max_y = a.y.max(b.y) + pad;
+    max_x >= view.min.x && min_x <= view.max.x && max_y >= view.min.y && min_y <= view.max.y
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_layer(
+    ui: &mut egui::Ui,
     painter: &Painter,
     transform: &CanvasTransform,
     layer: &Layer,
@@ -194,7 +207,8 @@ fn draw_layer(
     selected_shape: Option<usize>,
     selected_node: Option<usize>,
     selected_handle: Option<HandleKind>,
-    segment_cache: &mut std::collections::HashMap<String, super::state::SegmentCacheEntry>,
+    texture_cache: &mut std::collections::HashMap<String, egui::TextureHandle>,
+    segment_cache: &mut std::collections::HashMap<String, SegmentCacheEntry>,
 ) {
     if layer.is_vector() {
         draw_vector_layer(
@@ -222,28 +236,70 @@ fn draw_layer(
         return;
     }
 
-    let color = if layer_selected {
-        colors::PATH_LAYER_SELECTED
-    } else {
-        Color32::from_rgb(layer.color[0], layer.color[1], layer.color[2])
+    let key = match &layer.source {
+        LayerSource::Image { path } => Some(("img", path.clone())),
+        LayerSource::Svg { path } => Some(("svg", path.clone())),
+        _ => None,
     };
 
-    if let Some(entry) = cache::get_or_build(segment_cache, layer) {
-        let ox = layer.offset[0];
-        let oy = layer.offset[1];
-        let stroke = Stroke::new(1.0, color);
-        let mut shapes: Vec<egui::Shape> = Vec::with_capacity(entry.segments.len());
-        for (x0, y0, x1, y1) in &entry.segments {
-            let a = transform.to_screen(x0 + ox, y0 + oy);
-            let b = transform.to_screen(x1 + ox, y1 + oy);
-            shapes.push(egui::Shape::line_segment([a, b], stroke));
-        }
-        painter.extend(shapes);
+    if let Some((kind, path_str)) = key {
+        let cache_key = format!("{}::{}", kind, path_str);
+
+        let texture = texture_cache.entry(cache_key).or_insert_with(|| {
+            let color_image = load_layer_texture(&kind, &path_str, (min_x, min_y, max_x, max_y));
+
+            ui.ctx().load_texture(
+                format!("layer_tex_{}", layer.name),
+                color_image,
+                egui::TextureOptions::LINEAR,
+            )
+        });
+
+        painter.image(
+            texture.id(),
+            rect,
+            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            if layer_selected {
+                Color32::from_rgba_unmultiplied(255, 255, 255, 200)
+            } else {
+                Color32::WHITE
+            },
+        );
     } else {
-        let alpha = if layer_selected { 180 } else { 120 };
-        let fallback =
-            Color32::from_rgba_unmultiplied(layer.color[0], layer.color[1], layer.color[2], alpha);
-        painter.rect_filled(rect, 2.0, fallback);
+        let color = if layer_selected {
+            colors::PATH_LAYER_SELECTED
+        } else {
+            Color32::from_rgb(layer.color[0], layer.color[1], layer.color[2])
+        };
+
+        if let Some(entry) = cache::get_or_build(segment_cache, layer) {
+            let ox = layer.offset[0];
+            let oy = layer.offset[1];
+            let stroke = Stroke::new(1.0, color);
+            let view = transform.rect;
+            let pad = 2.0f32;
+            let mut shapes: Vec<egui::Shape> = Vec::with_capacity(entry.segments.len());
+            for (x0, y0, x1, y1) in &entry.segments {
+                let a = transform.to_screen(x0 + ox, y0 + oy);
+                let b = transform.to_screen(x1 + ox, y1 + oy);
+                if !segment_visible(a, b, view, pad) {
+                    continue;
+                }
+                shapes.push(egui::Shape::line_segment([a, b], stroke));
+            }
+            if !shapes.is_empty() {
+                painter.extend(shapes);
+            }
+        } else {
+            let alpha = if layer_selected { 180 } else { 120 };
+            let fallback = Color32::from_rgba_unmultiplied(
+                layer.color[0],
+                layer.color[1],
+                layer.color[2],
+                alpha,
+            );
+            painter.rect_filled(rect, 2.0, fallback);
+        }
     }
 
     if layer_selected {
@@ -359,5 +415,44 @@ fn draw_vector_layer(
                 Color32::WHITE,
             );
         }
+    }
+}
+
+fn load_layer_texture(kind: &str, path: &str, bounds: (f64, f64, f64, f64)) -> egui::ColorImage {
+    let (min_x, min_y, max_x, max_y) = bounds;
+    let width_mm = (max_x - min_x).max(1.0);
+    let aspect = ((max_y - min_y).max(1.0)) / width_mm;
+
+    let target_w = 1024u32;
+    let target_h = ((target_w as f64) * aspect).round().clamp(1.0, 4096.0) as u32;
+
+    if kind == "svg" {
+        match rasterize_svg(std::path::Path::new(path), target_w) {
+            Ok(r) => {
+                let rgba = r.image.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                return egui::ColorImage::from_rgba_unmultiplied(
+                    [w as usize, h as usize],
+                    rgba.as_raw(),
+                );
+            }
+            Err(e) => {
+                log::warn!("svg texture failed: {}", e);
+                return egui::ColorImage::filled([1, 1], Color32::TRANSPARENT);
+            }
+        }
+    }
+
+    if let Ok(img) = image::open(path) {
+        let resized = if img.width() > target_w || img.height() > target_h {
+            img.resize_exact(target_w, target_h, image::imageops::FilterType::Lanczos3)
+        } else {
+            img
+        };
+        let rgba = resized.to_rgba8();
+        let (w, h) = rgba.dimensions();
+        egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], rgba.as_raw())
+    } else {
+        egui::ColorImage::filled([1, 1], Color32::TRANSPARENT)
     }
 }

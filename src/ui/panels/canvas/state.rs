@@ -59,7 +59,6 @@ impl Default for PreviewWindow {
     }
 }
 
-#[derive(Clone)]
 pub struct SegmentCacheEntry {
     pub key: String,
     pub segments: Vec<(f64, f64, f64, f64)>,
