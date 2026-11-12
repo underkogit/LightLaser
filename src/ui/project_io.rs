@@ -186,6 +186,9 @@ impl LaserApp {
             .and_then(|s| s.to_str())
             .unwrap_or("gcode")
             .to_string();
+
+        let (min_x, min_y, max_x, max_y) = gcode_bounds(path).unwrap_or((0.0, 0.0, 100.0, 100.0));
+
         let mut layer = Layer::new(
             name.clone(),
             crate::ui::colors::LAYER_DEFAULT,
@@ -193,9 +196,55 @@ impl LaserApp {
                 path: path.to_string_lossy().to_string(),
             },
         );
-        layer.set_bounds(0.0, 0.0, 100.0, 100.0);
+        layer.set_bounds(min_x, min_y, max_x, max_y);
         self.push_history();
         self.project.add_layer(layer);
         log::info!("{}", t!("ui.info.layer_added", name = name));
     }
+}
+
+fn gcode_bounds(path: &Path) -> Option<(f64, f64, f64, f64)> {
+    let content = std::fs::read_to_string(path).ok()?;
+
+    let mut cur = (0.0f64, 0.0f64);
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    let mut any = false;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with(';') {
+            continue;
+        }
+
+        let mut nx = None;
+        let mut ny = None;
+
+        for tok in line.split_whitespace() {
+            if let Some(rest) = tok.strip_prefix('X') {
+                nx = rest.parse::<f64>().ok();
+            } else if let Some(rest) = tok.strip_prefix('Y') {
+                ny = rest.parse::<f64>().ok();
+            }
+        }
+
+        let px = nx.unwrap_or(cur.0);
+        let py = ny.unwrap_or(cur.1);
+
+        min_x = min_x.min(px);
+        min_y = min_y.min(py);
+        max_x = max_x.max(px);
+        max_y = max_y.max(py);
+        any = true;
+
+        cur = (px, py);
+    }
+
+    if !any || !min_x.is_finite() || !min_y.is_finite() {
+        return None;
+    }
+
+    Some((min_x, min_y, max_x, max_y))
 }

@@ -1,7 +1,6 @@
 use egui::{Color32, Painter, Pos2, Rect, Stroke};
 
-use crate::core::image::rasterize_svg;
-use crate::core::layer::{Layer, LayerSource};
+use crate::core::layer::Layer;
 use crate::core::vector::VectorPath;
 use crate::ui::selection::HandleKind;
 use crate::ui::{
@@ -9,6 +8,7 @@ use crate::ui::{
     widget::canvas::{draw_axes, draw_grid, draw_work_area},
 };
 
+use super::cache;
 use super::state::DragMode;
 
 pub fn render_background(painter: &Painter, transform: &CanvasTransform, app: &LaserApp) {
@@ -111,7 +111,7 @@ fn draw_dimensions(painter: &Painter, transform: &CanvasTransform, (w, h): (f64,
 }
 
 pub fn render_layers(
-    ui: &mut egui::Ui,
+    _ui: &mut egui::Ui,
     painter: &Painter,
     transform: &CanvasTransform,
     app: &mut LaserApp,
@@ -124,7 +124,6 @@ pub fn render_layers(
         }
         let layer_selected = selection.is_layer_selected(i);
         draw_layer(
-            ui,
             painter,
             transform,
             layer,
@@ -132,7 +131,7 @@ pub fn render_layers(
             selection.shape,
             selection.node,
             selection.handle,
-            &mut app.canvas.texture_cache,
+            &mut app.canvas.segment_cache,
         );
     }
 }
@@ -188,7 +187,6 @@ pub fn render_overlays(painter: &Painter, transform: &CanvasTransform, app: &Las
 
 #[allow(clippy::too_many_arguments)]
 fn draw_layer(
-    ui: &mut egui::Ui,
     painter: &Painter,
     transform: &CanvasTransform,
     layer: &Layer,
@@ -196,94 +194,18 @@ fn draw_layer(
     selected_shape: Option<usize>,
     selected_node: Option<usize>,
     selected_handle: Option<HandleKind>,
-    texture_cache: &mut std::collections::HashMap<String, egui::TextureHandle>,
+    segment_cache: &mut std::collections::HashMap<String, super::state::SegmentCacheEntry>,
 ) {
     if layer.is_vector() {
-        for (si, shape) in layer.shapes.iter().enumerate() {
-            let mut path = VectorPath::new();
-            path.nodes = shape.nodes.clone();
-            path.stroke = shape.stroke.clone();
-            path.closed = shape.closed;
-
-            let pts = path.flatten(0.1);
-            if pts.len() < 2 {
-                continue;
-            }
-
-            let screen: Vec<Pos2> = pts.iter().map(|p| transform.to_screen(p.x, p.y)).collect();
-
-            let shape_selected = layer_selected && selected_shape == Some(si);
-
-            let stroke_color = if shape_selected {
-                colors::PATH_LAYER_SELECTED
-            } else {
-                Color32::from_rgb(layer.color[0], layer.color[1], layer.color[2])
-            };
-
-            let width = (shape.stroke.width_mm as f32 * transform.scale).clamp(1.0, 6.0);
-            painter.add(egui::Shape::line(screen, Stroke::new(width, stroke_color)));
-
-            if shape_selected && transform.scale > 0.2 {
-                for (ni, node) in shape.nodes.iter().enumerate() {
-                    let p = transform.to_screen(node.point.x, node.point.y);
-                    let is_sel = selected_node == Some(ni);
-                    let color = if is_sel {
-                        Color32::from_rgb(255, 200, 60)
-                    } else {
-                        Color32::from_rgb(200, 200, 200)
-                    };
-                    painter.circle_filled(p, if is_sel { 4.5 } else { 3.0 }, color);
-
-                    if is_sel && node.has_handles() {
-                        let hi = transform.to_screen(node.handle_in.x, node.handle_in.y);
-                        let ho = transform.to_screen(node.handle_out.x, node.handle_out.y);
-                        painter.line_segment(
-                            [p, hi],
-                            Stroke::new(1.0, Color32::from_rgb(120, 200, 255)),
-                        );
-                        painter.line_segment(
-                            [p, ho],
-                            Stroke::new(1.0, Color32::from_rgb(120, 200, 255)),
-                        );
-                        let in_col = if selected_handle == Some(HandleKind::In) {
-                            Color32::from_rgb(255, 120, 120)
-                        } else {
-                            Color32::from_rgb(255, 160, 60)
-                        };
-                        let out_col = if selected_handle == Some(HandleKind::Out) {
-                            Color32::from_rgb(255, 120, 120)
-                        } else {
-                            Color32::from_rgb(255, 160, 60)
-                        };
-                        painter.circle_filled(hi, 4.0, in_col);
-                        painter.circle_filled(ho, 4.0, out_col);
-                    }
-                }
-            }
-        }
-
-        if let Some((min_x, min_y, max_x, max_y)) = layer.bounds() {
-            let p0 = transform.to_screen(min_x, max_y);
-            let p1 = transform.to_screen(max_x, min_y);
-            let rect = Rect::from_two_pos(p0, p1);
-            if layer_selected {
-                painter.rect_stroke(
-                    rect,
-                    2.0,
-                    Stroke::new(1.0, colors::PATH_LAYER_SELECTED),
-                    egui::StrokeKind::Outside,
-                );
-            }
-            if transform.scale > 0.3 {
-                painter.text(
-                    egui::pos2(rect.min.x + 4.0, rect.min.y + 4.0),
-                    egui::Align2::LEFT_TOP,
-                    &layer.name,
-                    egui::FontId::proportional(11.0),
-                    Color32::WHITE,
-                );
-            }
-        }
+        draw_vector_layer(
+            painter,
+            transform,
+            layer,
+            layer_selected,
+            selected_shape,
+            selected_node,
+            selected_handle,
+        );
         return;
     }
 
@@ -300,40 +222,28 @@ fn draw_layer(
         return;
     }
 
-    let key = match &layer.source {
-        LayerSource::Image { path } => Some(("img", path.clone())),
-        LayerSource::Svg { path } => Some(("svg", path.clone())),
-        _ => None,
+    let color = if layer_selected {
+        colors::PATH_LAYER_SELECTED
+    } else {
+        Color32::from_rgb(layer.color[0], layer.color[1], layer.color[2])
     };
 
-    if let Some((kind, path_str)) = key {
-        let cache_key = format!("{}::{}", kind, path_str);
-
-        let texture = texture_cache.entry(cache_key).or_insert_with(|| {
-            let color_image = load_layer_texture(&kind, &path_str, (min_x, min_y, max_x, max_y));
-
-            ui.ctx().load_texture(
-                format!("layer_tex_{}", layer.name),
-                color_image,
-                egui::TextureOptions::LINEAR,
-            )
-        });
-
-        painter.image(
-            texture.id(),
-            rect,
-            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-            if layer_selected {
-                Color32::from_rgba_unmultiplied(255, 255, 255, 200)
-            } else {
-                Color32::WHITE
-            },
-        );
+    if let Some(entry) = cache::get_or_build(segment_cache, layer) {
+        let ox = layer.offset[0];
+        let oy = layer.offset[1];
+        let stroke = Stroke::new(1.0, color);
+        let mut shapes: Vec<egui::Shape> = Vec::with_capacity(entry.segments.len());
+        for (x0, y0, x1, y1) in &entry.segments {
+            let a = transform.to_screen(x0 + ox, y0 + oy);
+            let b = transform.to_screen(x1 + ox, y1 + oy);
+            shapes.push(egui::Shape::line_segment([a, b], stroke));
+        }
+        painter.extend(shapes);
     } else {
         let alpha = if layer_selected { 180 } else { 120 };
-        let color =
+        let fallback =
             Color32::from_rgba_unmultiplied(layer.color[0], layer.color[1], layer.color[2], alpha);
-        painter.rect_filled(rect, 2.0, color);
+        painter.rect_filled(rect, 2.0, fallback);
     }
 
     if layer_selected {
@@ -356,41 +266,98 @@ fn draw_layer(
     }
 }
 
-fn load_layer_texture(kind: &str, path: &str, bounds: (f64, f64, f64, f64)) -> egui::ColorImage {
-    let (min_x, min_y, max_x, max_y) = bounds;
-    let width_mm = (max_x - min_x).max(1.0);
-    let aspect = ((max_y - min_y).max(1.0)) / width_mm;
+fn draw_vector_layer(
+    painter: &Painter,
+    transform: &CanvasTransform,
+    layer: &Layer,
+    layer_selected: bool,
+    selected_shape: Option<usize>,
+    selected_node: Option<usize>,
+    selected_handle: Option<HandleKind>,
+) {
+    for (si, shape) in layer.shapes.iter().enumerate() {
+        let mut path = VectorPath::new();
+        path.nodes = shape.nodes.clone();
+        path.stroke = shape.stroke.clone();
+        path.closed = shape.closed;
 
-    let target_w = 1024u32;
-    let target_h = ((target_w as f64) * aspect).round().clamp(1.0, 4096.0) as u32;
+        let pts = path.flatten(0.1);
+        if pts.len() < 2 {
+            continue;
+        }
 
-    if kind == "svg" {
-        match rasterize_svg(std::path::Path::new(path), target_w) {
-            Ok(r) => {
-                let rgba = r.image.to_rgba8();
-                let (w, h) = rgba.dimensions();
-                return egui::ColorImage::from_rgba_unmultiplied(
-                    [w as usize, h as usize],
-                    rgba.as_raw(),
-                );
-            }
-            Err(e) => {
-                log::warn!("svg texture failed: {}", e);
-                return egui::ColorImage::filled([1, 1], Color32::TRANSPARENT);
+        let screen: Vec<Pos2> = pts.iter().map(|p| transform.to_screen(p.x, p.y)).collect();
+
+        let shape_selected = layer_selected && selected_shape == Some(si);
+
+        let stroke_color = if shape_selected {
+            colors::PATH_LAYER_SELECTED
+        } else {
+            Color32::from_rgb(layer.color[0], layer.color[1], layer.color[2])
+        };
+
+        let width = (shape.stroke.width_mm as f32 * transform.scale).clamp(1.0, 6.0);
+        painter.add(egui::Shape::line(screen, Stroke::new(width, stroke_color)));
+
+        if shape_selected && transform.scale > 0.2 {
+            for (ni, node) in shape.nodes.iter().enumerate() {
+                let p = transform.to_screen(node.point.x, node.point.y);
+                let is_sel = selected_node == Some(ni);
+                let color = if is_sel {
+                    Color32::from_rgb(255, 200, 60)
+                } else {
+                    Color32::from_rgb(200, 200, 200)
+                };
+                painter.circle_filled(p, if is_sel { 4.5 } else { 3.0 }, color);
+
+                if is_sel && node.has_handles() {
+                    let hi = transform.to_screen(node.handle_in.x, node.handle_in.y);
+                    let ho = transform.to_screen(node.handle_out.x, node.handle_out.y);
+                    painter.line_segment(
+                        [p, hi],
+                        Stroke::new(1.0, Color32::from_rgb(120, 200, 255)),
+                    );
+                    painter.line_segment(
+                        [p, ho],
+                        Stroke::new(1.0, Color32::from_rgb(120, 200, 255)),
+                    );
+                    let in_col = if selected_handle == Some(HandleKind::In) {
+                        Color32::from_rgb(255, 120, 120)
+                    } else {
+                        Color32::from_rgb(255, 160, 60)
+                    };
+                    let out_col = if selected_handle == Some(HandleKind::Out) {
+                        Color32::from_rgb(255, 120, 120)
+                    } else {
+                        Color32::from_rgb(255, 160, 60)
+                    };
+                    painter.circle_filled(hi, 4.0, in_col);
+                    painter.circle_filled(ho, 4.0, out_col);
+                }
             }
         }
     }
 
-    if let Ok(img) = image::open(path) {
-        let resized = if img.width() > target_w || img.height() > target_h {
-            img.resize_exact(target_w, target_h, image::imageops::FilterType::Lanczos3)
-        } else {
-            img
-        };
-        let rgba = resized.to_rgba8();
-        let (w, h) = rgba.dimensions();
-        egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], rgba.as_raw())
-    } else {
-        egui::ColorImage::filled([1, 1], Color32::TRANSPARENT)
+    if let Some((min_x, min_y, max_x, max_y)) = layer.bounds() {
+        let p0 = transform.to_screen(min_x, max_y);
+        let p1 = transform.to_screen(max_x, min_y);
+        let rect = Rect::from_two_pos(p0, p1);
+        if layer_selected {
+            painter.rect_stroke(
+                rect,
+                2.0,
+                Stroke::new(1.0, colors::PATH_LAYER_SELECTED),
+                egui::StrokeKind::Outside,
+            );
+        }
+        if transform.scale > 0.3 {
+            painter.text(
+                egui::pos2(rect.min.x + 4.0, rect.min.y + 4.0),
+                egui::Align2::LEFT_TOP,
+                &layer.name,
+                egui::FontId::proportional(11.0),
+                Color32::WHITE,
+            );
+        }
     }
 }

@@ -59,6 +59,13 @@ impl Default for PreviewWindow {
     }
 }
 
+#[derive(Clone)]
+pub struct SegmentCacheEntry {
+    pub key: String,
+    pub segments: Vec<(f64, f64, f64, f64)>,
+    pub bounds: Option<(f64, f64, f64, f64)>,
+}
+
 pub struct CanvasState {
     pub zoom: f32,
     pub offset: Vec2,
@@ -66,7 +73,8 @@ pub struct CanvasState {
     pub pending_center: bool,
     pub hovered_layer: Option<usize>,
     pub drag: DragMode,
-    pub texture_cache: HashMap<String, TextureHandle>,
+    pub texture_cache: HashMap<String, egui::TextureHandle>,
+    pub segment_cache: HashMap<String, SegmentCacheEntry>,
     pub preview_window: PreviewWindow,
 }
 
@@ -94,6 +102,7 @@ impl Default for CanvasState {
             hovered_layer: None,
             drag: DragMode::None,
             texture_cache: HashMap::new(),
+            segment_cache: HashMap::new(),
             preview_window: PreviewWindow::default(),
         }
     }

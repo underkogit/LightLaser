@@ -289,6 +289,8 @@ fn build_layer_segments(layer: &Layer) -> Vec<(f64, f64, f64, f64)> {
             let Ok(content) = std::fs::read_to_string(path) else {
                 return Vec::new();
             };
+            let ox = layer.offset[0];
+            let oy = layer.offset[1];
             let mut out = Vec::new();
             let mut cur = (0.0f64, 0.0f64);
             let mut mode_rapid = false;
@@ -299,14 +301,11 @@ fn build_layer_segments(layer: &Layer) -> Vec<(f64, f64, f64, f64)> {
                 }
                 let mut nx = None;
                 let mut ny = None;
+                let mut seen_g = None;
                 for tok in line.split_whitespace() {
                     if let Some(rest) = tok.strip_prefix('G') {
                         if let Ok(g) = rest.parse::<u32>() {
-                            if g == 0 {
-                                mode_rapid = true;
-                            } else if g == 1 {
-                                mode_rapid = false;
-                            }
+                            seen_g = Some(g);
                         }
                     } else if let Some(rest) = tok.strip_prefix('X') {
                         nx = rest.parse::<f64>().ok();
@@ -314,10 +313,17 @@ fn build_layer_segments(layer: &Layer) -> Vec<(f64, f64, f64, f64)> {
                         ny = rest.parse::<f64>().ok();
                     }
                 }
+                if let Some(g) = seen_g {
+                    if g == 0 {
+                        mode_rapid = true;
+                    } else if g == 1 || g == 2 || g == 3 {
+                        mode_rapid = false;
+                    }
+                }
                 let px = nx.unwrap_or(cur.0);
                 let py = ny.unwrap_or(cur.1);
                 if !mode_rapid && (px != cur.0 || py != cur.1) {
-                    out.push((cur.0, cur.1, px, py));
+                    out.push((cur.0 + ox, cur.1 + oy, px + ox, py + oy));
                 }
                 cur = (px, py);
             }
