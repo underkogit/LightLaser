@@ -120,28 +120,7 @@ impl LaserApp {
                             .map_err(|e| format!("engrave '{}': {}", path, e))?
                     }
                 }
-                LayerSource::Gcode { path } => {
-                    let content = std::fs::read_to_string(path)
-                        .map_err(|e| format!("gcode '{}': {}", path, e))?;
-                    content
-                        .lines()
-                        .map(|l| l.trim().to_string())
-                        .filter(|l| !l.is_empty() && !l.starts_with(';'))
-                        .map(|raw| GcodeCommand {
-                            raw,
-                            line_number: None,
-                            motion: None,
-                            x: None,
-                            y: None,
-                            z: None,
-                            i: None,
-                            j: None,
-                            feed: None,
-                            spindle: None,
-                            comment: None,
-                        })
-                        .collect()
-                }
+                LayerSource::Gcode { path } => build_gcode_layer(path, layer)?,
                 LayerSource::Vector => export_vector_layer(layer, &layer.params, origin)
                     .map_err(|e| format!("vector '{}': {}", layer.name, e))?,
             };
@@ -162,5 +141,147 @@ impl LaserApp {
     pub(crate) fn export_job_gcode(&self) -> Result<String, String> {
         let lines = self.build_job_gcode()?;
         Ok(lines.join("\n"))
+    }
+}
+
+fn build_gcode_layer(path: &str, layer: &Layer) -> Result<Vec<GcodeCommand>, String> {
+    let content = std::fs::read_to_string(path).map_err(|e| format!("gcode '{}': {}", path, e))?;
+
+    let raw = parse_gcode_raw(&content);
+
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut segs = raw;
+
+    if layer.mirror_x || layer.mirror_y {
+        if let Some(center) = layer.mirror_center {
+            for s in &mut segs {
+                let (mut ax, mut ay, mut bx, mut by) = (s.0, s.1, s.2, s.3);
+                if layer.mirror_x {
+                    ax = 2.0 * center[0] - ax;
+                    bx = 2.0 * center[0] - bx;
+                }
+                if layer.mirror_y {
+                    ay = 2.0 * center[1] - ay;
+                    by = 2.0 * center[1] - by;
+                }
+                s.0 = ax;
+                s.1 = ay;
+                s.2 = bx;
+                s.3 = by;
+            }
+        }
+    }
+
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    for (x0, y0, x1, y1) in &segs {
+        min_x = min_x.min(*x0).min(*x1);
+        min_y = min_y.min(*y0).min(*y1);
+    }
+
+    let ox = layer.offset[0];
+    let oy = layer.offset[1];
+
+    let s_max = 1000.0;
+    let s_on = ((layer.params.power_percent.clamp(0.0, 100.0) / 100.0) * s_max).round();
+    let laser_on = if layer.params.dynamic_power {
+        format!("M4 S{:.0}", s_on)
+    } else {
+        format!("M3 S{:.0}", s_on)
+    };
+
+    let mut cmds = Vec::new();
+    cmds.push(make_cmd("G21".to_string()));
+    cmds.push(make_cmd("G90".to_string()));
+    cmds.push(make_cmd(laser_on));
+    cmds.push(make_cmd(format!("G1 F{:.0}", layer.params.feed_rate)));
+
+    for pass in 0..layer.params.passes.max(1) {
+        if pass > 0 {
+            cmds.push(make_cmd("; --- next pass ---".to_string()));
+        }
+        for (x0, y0, x1, y1) in &segs {
+            cmds.push(make_cmd(format!(
+                "G0 X{:.4} Y{:.4}",
+                x0 - min_x + ox,
+                y0 - min_y + oy
+            )));
+            cmds.push(make_cmd(format!(
+                "G1 X{:.4} Y{:.4}",
+                x1 - min_x + ox,
+                y1 - min_y + oy
+            )));
+        }
+    }
+
+    cmds.push(make_cmd("M5".to_string()));
+
+    Ok(cmds)
+}
+
+fn parse_gcode_raw(content: &str) -> Vec<(f64, f64, f64, f64)> {
+    let mut raw = Vec::new();
+    let mut cur = (0.0f64, 0.0f64);
+    let mut mode_rapid = false;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with(';') {
+            continue;
+        }
+
+        let mut nx = None;
+        let mut ny = None;
+        let mut seen_g = None;
+
+        for tok in line.split_whitespace() {
+            if let Some(rest) = tok.strip_prefix('G') {
+                if let Ok(g) = rest.parse::<u32>() {
+                    seen_g = Some(g);
+                }
+            } else if let Some(rest) = tok.strip_prefix('X') {
+                nx = rest.parse::<f64>().ok();
+            } else if let Some(rest) = tok.strip_prefix('Y') {
+                ny = rest.parse::<f64>().ok();
+            }
+        }
+
+        if let Some(g) = seen_g {
+            if g == 0 {
+                mode_rapid = true;
+            } else if g == 1 || g == 2 || g == 3 {
+                mode_rapid = false;
+            }
+        }
+
+        let px = nx.unwrap_or(cur.0);
+        let py = ny.unwrap_or(cur.1);
+
+        if !mode_rapid && (px != cur.0 || py != cur.1) {
+            raw.push((cur.0, cur.1, px, py));
+        }
+
+        cur = (px, py);
+    }
+
+    raw
+}
+
+fn make_cmd(raw: String) -> GcodeCommand {
+    GcodeCommand {
+        raw,
+        line_number: None,
+        motion: None,
+        x: None,
+        y: None,
+        z: None,
+        i: None,
+        j: None,
+        feed: None,
+        spindle: None,
+        comment: None,
     }
 }

@@ -19,7 +19,7 @@ impl LaserApp {
 
                     ui.horizontal(|ui| {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.label(format!("LightLazer v{}", env!("CARGO_PKG_VERSION")));
+                            ui.label(format!("LightLaser v{}", env!("CARGO_PKG_VERSION")));
                         });
                     });
                     ui.separator();
