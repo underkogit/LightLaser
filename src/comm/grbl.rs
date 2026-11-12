@@ -1,7 +1,7 @@
  
-
 use std::fmt;
 use std::sync::mpsc::{Receiver, Sender};
+use std::time::{Duration, Instant};
 
 use crate::comm::serial::SerialConnection;
 use crate::comm::status::GrblStatus;
@@ -48,23 +48,59 @@ impl GrblConnection {
         let mut conn = SerialConnection::open(port, baudrate)?;
 
         let _ = conn.write_raw(b"\r\n\r\n");
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        std::thread::sleep(Duration::from_millis(300));
 
-        let mut welcome = None;
-        for _ in 0..20 {
-            if let Some(line) = conn.read_line()? {
-                if line.starts_with("Grbl") {
-                    welcome = Some(line);
-                    break;
+        let mut saw_banner: Option<String> = None;
+        let mut saw_reply = false;
+        let mut asked = false;
+        let start = Instant::now();
+        let hard_deadline = start + Duration::from_secs(5);
+
+        while Instant::now() < hard_deadline {
+            if !asked && start.elapsed() > Duration::from_millis(700) {
+                let _ = conn.write_raw(b"?");
+                asked = true;
+            }
+
+            match conn.read_line()? {
+                Some(line) => {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    if trimmed.starts_with("Grbl") || trimmed.contains("Grbl") {
+                        saw_banner = Some(trimmed.to_string());
+                        saw_reply = true;
+                        break;
+                    }
+                    if trimmed.starts_with('<') && trimmed.ends_with('>') {
+                        saw_reply = true;
+                        break;
+                    }
+                    if trimmed == "ok"
+                        || trimmed.starts_with("error:")
+                        || trimmed.starts_with("ALARM:")
+                    {
+                        saw_reply = true;
+                        break;
+                    }
+                }
+                None => {
+                    std::thread::sleep(Duration::from_millis(20));
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(100));
         }
 
-        if welcome.is_none() {
+        if !saw_reply {
             return Err(GrblError::NoResponse(
-                "did not receive Grbl banner".to_string(),
+                "no reply from controller (banner/status/ok)".to_string(),
             ));
+        }
+
+        if let Some(b) = saw_banner {
+            log::info!("GRBL banner: {}", b);
+        } else {
+            log::info!("GRBL banner not received, connection confirmed by status reply");
         }
 
         Ok(Self { conn })
@@ -83,7 +119,7 @@ impl GrblConnection {
                     return Err(GrblError::Alarm(resp));
                 }
                 Some(_) => continue,
-                None => std::thread::sleep(std::time::Duration::from_millis(20)),
+                None => std::thread::sleep(Duration::from_millis(20)),
             }
         }
 
@@ -129,7 +165,7 @@ impl GrblConnection {
                     return Ok(s);
                 }
             }
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::thread::sleep(Duration::from_millis(50));
         }
         Err(GrblError::NoResponse("no status".to_string()))
     }

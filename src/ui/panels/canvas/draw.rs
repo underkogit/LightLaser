@@ -1,6 +1,8 @@
+
 use egui::{Color32, Painter, Pos2, Rect, Stroke};
 
-use crate::core::layer::Layer;
+use crate::core::image::rasterize_svg;
+use crate::core::layer::{Layer, LayerSource};
 use crate::core::vector::VectorPath;
 use crate::ui::selection::HandleKind;
 use crate::ui::{
@@ -295,35 +297,27 @@ fn draw_layer(
     let p1 = transform.to_screen(max_x, min_y);
     let rect = Rect::from_two_pos(p0, p1);
 
-    let path = match &layer.source {
-        crate::core::layer::LayerSource::Image { path } => Some(std::path::PathBuf::from(path)),
-        crate::core::layer::LayerSource::Svg { path } => Some(std::path::PathBuf::from(path)),
+    if rect.width() < 1.0 || rect.height() < 1.0 {
+        return;
+    }
+
+    let key = match &layer.source {
+        LayerSource::Image { path } => Some(("img", path.clone())),
+        LayerSource::Svg { path } => Some(("svg", path.clone())),
         _ => None,
     };
 
-    if let Some(p) = path {
-        let key = p.to_string_lossy().to_string();
-        let texture = texture_cache.entry(key).or_insert_with(|| {
-            if let Ok(img) = image::open(&p) {
-                let rgba = img.to_rgba8();
-                let (w, h) = rgba.dimensions();
-                let color_image = egui::ColorImage::from_rgba_unmultiplied(
-                    [w as usize, h as usize],
-                    rgba.as_raw(),
-                );
-                ui.ctx().load_texture(
-                    format!("layer_tex_{}", layer.name),
-                    color_image,
-                    egui::TextureOptions::LINEAR,
-                )
-            } else {
-                let color_image = egui::ColorImage::filled([1, 1], Color32::TRANSPARENT);
-                ui.ctx().load_texture(
-                    format!("layer_tex_fallback_{}", layer.name),
-                    color_image,
-                    egui::TextureOptions::LINEAR,
-                )
-            }
+    if let Some((kind, path_str)) = key {
+        let cache_key = format!("{}::{}", kind, path_str);
+
+        let texture = texture_cache.entry(cache_key).or_insert_with(|| {
+            let color_image = load_layer_texture(&kind, &path_str, (min_x, min_y, max_x, max_y));
+
+            ui.ctx().load_texture(
+                format!("layer_tex_{}", layer.name),
+                color_image,
+                egui::TextureOptions::LINEAR,
+            )
         });
 
         painter.image(
@@ -360,5 +354,44 @@ fn draw_layer(
             egui::FontId::proportional(11.0),
             Color32::WHITE,
         );
+    }
+}
+
+fn load_layer_texture(kind: &str, path: &str, bounds: (f64, f64, f64, f64)) -> egui::ColorImage {
+    let (min_x, min_y, max_x, max_y) = bounds;
+    let width_mm = (max_x - min_x).max(1.0);
+    let aspect = ((max_y - min_y).max(1.0)) / width_mm;
+
+    let target_w = 1024u32;
+    let target_h = ((target_w as f64) * aspect).round().clamp(1.0, 4096.0) as u32;
+
+    if kind == "svg" {
+        match rasterize_svg(std::path::Path::new(path), target_w) {
+            Ok(r) => {
+                let rgba = r.image.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                return egui::ColorImage::from_rgba_unmultiplied(
+                    [w as usize, h as usize],
+                    rgba.as_raw(),
+                );
+            }
+            Err(e) => {
+                log::warn!("svg texture failed: {}", e);
+                return egui::ColorImage::filled([1, 1], Color32::TRANSPARENT);
+            }
+        }
+    }
+
+    if let Ok(img) = image::open(path) {
+        let resized = if img.width() > target_w || img.height() > target_h {
+            img.resize_exact(target_w, target_h, image::imageops::FilterType::Lanczos3)
+        } else {
+            img
+        };
+        let rgba = resized.to_rgba8();
+        let (w, h) = rgba.dimensions();
+        egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], rgba.as_raw())
+    } else {
+        egui::ColorImage::filled([1, 1], Color32::TRANSPARENT)
     }
 }

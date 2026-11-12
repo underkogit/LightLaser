@@ -1,3 +1,4 @@
+
 use rust_i18n::t;
 
 use crate::core::layer::{LayerParams, LayerSource};
@@ -95,19 +96,22 @@ impl LaserApp {
                 .range(1.0..=20000.0)
                 .suffix(" mm/min"),
         )
-            .on_hover_text(t!("ui.label.feed_rate"));
+        .on_hover_text(t!("ui.label.feed_rate"));
 
         ui.add(
             egui::DragValue::new(&mut new_params.passes)
                 .speed(0.1)
                 .range(1..=100),
         )
-            .on_hover_text(t!("ui.label.passes"));
+        .on_hover_text(t!("ui.label.passes"));
 
         ui.checkbox(&mut new_params.dynamic_power, t!("ui.label.dynamic_power"));
 
-        let is_image = matches!(self.project.layers[idx].source, LayerSource::Image { .. });
-        if is_image {
+        let is_raster = matches!(
+            self.project.layers[idx].source,
+            LayerSource::Image { .. } | LayerSource::Svg { .. }
+        );
+        if is_raster {
             ui.add_space(8.0);
             ui.separator();
             ui.add_space(4.0);

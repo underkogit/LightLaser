@@ -170,6 +170,13 @@ impl Layer {
         matches!(self.source, LayerSource::Vector)
     }
 
+    pub fn is_raster(&self) -> bool {
+        matches!(
+            self.source,
+            LayerSource::Image { .. } | LayerSource::Svg { .. }
+        )
+    }
+
     pub fn recompute_bounds(&mut self) {
         if self.shapes.is_empty() {
             if self.is_vector() {

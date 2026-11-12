@@ -3,8 +3,8 @@ use std::path::Path;
 use rust_i18n::t;
 
 use crate::core::{
-    image::{extract_palette, load_image},
-    layer::{Layer, LayerSource, PROJECT_VERSION, Project, VectorShape},
+    image::{extract_palette, load_image, rasterize_svg},
+    layer::{Layer, LayerSource, PROJECT_VERSION, Project},
 };
 use crate::ui::LaserApp;
 
@@ -138,34 +138,19 @@ impl LaserApp {
         let height_mm = width_mm / aspect.max(1e-9);
         let ppm = loaded.width as f64 / width_mm;
 
-        let mut layers: Vec<Layer> = Vec::new();
-
-        if palette.is_empty() {
-            let mut layer = Layer::new(
-                stem.clone(),
-                [220, 220, 220],
-                LayerSource::Image {
-                    path: path.to_string_lossy().to_string(),
-                },
-            );
-            layer.set_bounds(0.0, 0.0, width_mm, height_mm);
-            layer.params.pixels_per_mm = ppm.max(1.0);
-            layers.push(layer);
-            return Ok(layers);
-        }
+        let color = palette.first().map(|c| c.rgb).unwrap_or([220, 220, 220]);
 
         let mut layer = Layer::new(
             stem,
-            palette[0].rgb,
+            color,
             LayerSource::Image {
                 path: path.to_string_lossy().to_string(),
             },
         );
         layer.set_bounds(0.0, 0.0, width_mm, height_mm);
         layer.params.pixels_per_mm = ppm.max(1.0);
-        layers.push(layer);
 
-        Ok(layers)
+        Ok(vec![layer])
     }
 
     pub(crate) fn add_svg_interactive(&mut self) {
@@ -195,31 +180,20 @@ impl LaserApp {
     }
 
     fn create_svg_layer(&self, path: &Path) -> Result<Layer, String> {
-        use resvg::usvg;
-        use tiny_skia::Pixmap;
-
-        let svg_data = std::fs::read(path).map_err(|e| format!("svg read: {}", e))?;
-        let opt = usvg::Options::default();
-        let tree =
-            usvg::Tree::from_data(&svg_data, &opt).map_err(|e| format!("svg parse: {}", e))?;
-
-        let size = tree.size();
-        let width_mm = size.width() as f64 * 25.4 / 96.0;
-        let height_mm = size.height() as f64 * 25.4 / 96.0;
-
-        let mut pixmap = Pixmap::new(size.width() as u32, size.height() as u32)
-            .ok_or("failed to create pixmap")?;
-        resvg::render(&tree, tiny_skia::Transform::default(), &mut pixmap.as_mut());
-
-        let image =
-            image::RgbaImage::from_raw(pixmap.width(), pixmap.height(), pixmap.data().to_vec())
-                .ok_or("failed to convert pixmap to image")?;
-
         let stem = path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("Svg")
             .to_string();
+
+        let raster = rasterize_svg(path, 1024)?;
+
+        let width_mm = raster.width_mm.max(1.0);
+        let height_mm = raster.height_mm.max(1.0);
+
+        let px_per_mm = raster.image.width() as f64 / width_mm;
+        let px_per_mm_y = raster.image.height() as f64 / height_mm;
+        let px_per_mm = px_per_mm.max(px_per_mm_y);
 
         let mut layer = Layer::new(
             stem,
@@ -230,9 +204,9 @@ impl LaserApp {
         );
 
         layer.set_bounds(0.0, 0.0, width_mm, height_mm);
-        layer.params.pixels_per_mm = (pixmap.width() as f64 / width_mm).max(1.0);
-
-        let _ = image;
+        layer.params.pixels_per_mm = px_per_mm.max(1.0);
+        layer.params.threshold = 128;
+        layer.params.invert = true;
 
         Ok(layer)
     }
@@ -311,7 +285,4 @@ impl LaserApp {
 
         Ok(layer)
     }
-
-    #[allow(dead_code)]
-    fn _unused(_s: VectorShape) {}
 }
