@@ -56,6 +56,14 @@ impl LaserApp {
                 self.add_svg_interactive();
                 ui.close();
             }
+            if ui.button("Add PCB SVG").clicked() {
+                self.add_svg_pcb_interactive();
+                ui.close();
+            }
+            if ui.button("Add Gerber").clicked() {
+                self.add_gerber_interactive();
+                ui.close();
+            }
             if ui.button(t!("ui.menu.add_gcode")).clicked() {
                 self.add_gcode_interactive();
                 ui.close();
@@ -73,22 +81,28 @@ impl LaserApp {
 
         ui.menu_button(t!("ui.menu.edit").to_string(), |ui| {
             if ui
-                .add_enabled(self.history.can_undo(), egui::Button::new(format!(
-                    "{} {}",
-                    egui_phosphor::regular::ARROW_U_UP_LEFT,
-                    t!("ui.menu.undo")
-                )))
+                .add_enabled(
+                    self.history.can_undo(),
+                    egui::Button::new(format!(
+                        "{} {}",
+                        egui_phosphor::regular::ARROW_U_UP_LEFT,
+                        t!("ui.menu.undo")
+                    )),
+                )
                 .clicked()
             {
                 self.undo();
                 ui.close();
             }
             if ui
-                .add_enabled(self.history.can_redo(), egui::Button::new(format!(
-                    "{} {}",
-                    egui_phosphor::regular::ARROW_U_UP_RIGHT,
-                    t!("ui.menu.redo")
-                )))
+                .add_enabled(
+                    self.history.can_redo(),
+                    egui::Button::new(format!(
+                        "{} {}",
+                        egui_phosphor::regular::ARROW_U_UP_RIGHT,
+                        t!("ui.menu.redo")
+                    )),
+                )
                 .clicked()
             {
                 self.redo();

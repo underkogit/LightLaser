@@ -1,9 +1,9 @@
 use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 
 use crate::core::image::{
-    RasterizeOptions, engrave_segments, load_image, rasterize, rasterize_svg,
+    RasterizeOptions, engrave_segments, load_image, rasterize, rasterize_svg, svg_trace,
 };
-use crate::core::layer::{Layer, LayerSource};
+use crate::core::layer::{EngraveMode, Layer, LayerSource};
 use crate::core::vector::VectorPath;
 use crate::ui::LaserApp;
 
@@ -174,10 +174,11 @@ fn rebuild_preview(app: &mut LaserApp) {
 }
 
 fn layer_origin(layer: &Layer) -> (f64, f64) {
-    layer
-        .bounds()
-        .map(|b| (layer.offset[0] + b.0, layer.offset[1] + b.1))
-        .unwrap_or((layer.offset[0], layer.offset[1]))
+    if layer.is_vector() {
+        (layer.offset[0], layer.offset[1])
+    } else {
+        layer.bounds().map(|b| (b.0, b.1)).unwrap_or((0.0, 0.0))
+    }
 }
 
 fn build_layer_segments(layer: &Layer) -> Vec<(f64, f64, f64, f64)> {
@@ -231,26 +232,58 @@ fn build_layer_segments(layer: &Layer) -> Vec<(f64, f64, f64, f64)> {
                 .collect()
         }
         LayerSource::Svg { path } => {
-            let target_px = (layer.params.pixels_per_mm * width_mm)
-                .round()
-                .clamp(64.0, 4096.0) as u32;
-            let Ok(svg) = rasterize_svg(std::path::Path::new(path), target_px) else {
-                return Vec::new();
-            };
-            let raster = rasterize(
-                &svg.image,
-                RasterizeOptions {
-                    pixels_per_mm: layer.params.pixels_per_mm,
-                    threshold: layer.params.threshold,
-                    invert: layer.params.invert,
-                },
-                Some(width_mm),
-            );
-            engrave_segments(&raster, &layer.params, origin)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|s| (s.x0, s.y0, s.x1, s.y1))
-                .collect()
+            if layer.params.engrave_mode == EngraveMode::Lines {
+                let target_px = (layer.params.pixels_per_mm * width_mm)
+                    .round()
+                    .clamp(512.0, 4096.0) as u32;
+
+                let Ok(img) =
+                    svg_trace::rasterize_svg_to_image(std::path::Path::new(path), target_px)
+                else {
+                    return Vec::new();
+                };
+
+                let paths = svg_trace::trace_image_to_paths(&img, 128);
+                let scale_x = width_mm / target_px as f64;
+                let scale_y =
+                    (width_mm * (img.height() as f64 / img.width() as f64)) / img.height() as f64;
+
+                let mut out = Vec::new();
+                for p in paths {
+                    if p.points.len() < 2 {
+                        continue;
+                    }
+                    for w in p.points.windows(2) {
+                        let x0 = origin.0 + w[0].0 * scale_x;
+                        let y0 = origin.1 + w[0].1 * scale_y;
+                        let x1 = origin.0 + w[1].0 * scale_x;
+                        let y1 = origin.1 + w[1].1 * scale_y;
+                        out.push((x0, y0, x1, y1));
+                    }
+                }
+                out
+            } else {
+                let target_px = (layer.params.pixels_per_mm * width_mm)
+                    .round()
+                    .clamp(64.0, 4096.0) as u32;
+                let Ok(svg) = rasterize_svg(std::path::Path::new(path), target_px) else {
+                    return Vec::new();
+                };
+                let raster = rasterize(
+                    &svg.image,
+                    RasterizeOptions {
+                        pixels_per_mm: layer.params.pixels_per_mm,
+                        threshold: layer.params.threshold,
+                        invert: layer.params.invert,
+                    },
+                    Some(width_mm),
+                );
+                engrave_segments(&raster, &layer.params, origin)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|s| (s.x0, s.y0, s.x1, s.y1))
+                    .collect()
+            }
         }
         LayerSource::Gcode { path } => {
             let Ok(content) = std::fs::read_to_string(path) else {
@@ -287,6 +320,59 @@ fn build_layer_segments(layer: &Layer) -> Vec<(f64, f64, f64, f64)> {
                     out.push((cur.0, cur.1, px, py));
                 }
                 cur = (px, py);
+            }
+            out
+        }
+        LayerSource::Gerber { path } => {
+            let Ok(gerber_paths) =
+                crate::core::image::gerber::parse_gerber(std::path::Path::new(path))
+            else {
+                return Vec::new();
+            };
+
+            let mut min_x = f64::INFINITY;
+            let mut min_y = f64::INFINITY;
+            let mut max_x = f64::NEG_INFINITY;
+            let mut max_y = f64::NEG_INFINITY;
+
+            for p in &gerber_paths {
+                for pt in &p.points {
+                    min_x = min_x.min(pt.0);
+                    min_y = min_y.min(pt.1);
+                    max_x = max_x.max(pt.0);
+                    max_y = max_y.max(pt.1);
+                }
+            }
+
+            let (w, h) = (max_x - min_x, max_y - min_y);
+            let target_w = width_mm;
+            let scale = if w.max(h) > 0.0 {
+                target_w / w.max(h)
+            } else {
+                1.0
+            };
+
+            let mut out = Vec::new();
+            for p in gerber_paths {
+                if p.points.len() < 2 {
+                    continue;
+                }
+                for win in p.points.windows(2) {
+                    let x0 = origin.0 + (win[0].0 - min_x) * scale;
+                    let y0 = origin.1 + (win[0].1 - min_y) * scale;
+                    let x1 = origin.0 + (win[1].0 - min_x) * scale;
+                    let y1 = origin.1 + (win[1].1 - min_y) * scale;
+                    out.push((x0, y0, x1, y1));
+                }
+                if p.closed {
+                    let first = p.points[0];
+                    let last = p.points[p.points.len() - 1];
+                    let x0 = origin.0 + (last.0 - min_x) * scale;
+                    let y0 = origin.1 + (last.1 - min_y) * scale;
+                    let x1 = origin.0 + (first.0 - min_x) * scale;
+                    let y1 = origin.1 + (first.1 - min_y) * scale;
+                    out.push((x0, y0, x1, y1));
+                }
             }
             out
         }

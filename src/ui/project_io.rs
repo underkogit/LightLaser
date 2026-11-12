@@ -3,8 +3,8 @@ use std::path::Path;
 use rust_i18n::t;
 
 use crate::core::{
-    image::{extract_palette, load_image, rasterize_svg},
-    layer::{Layer, LayerSource, PROJECT_VERSION, Project},
+    image::{extract_palette, load_image, rasterize_svg, svg_trace},
+    layer::{EngraveMode, Layer, LayerSource, PROJECT_VERSION, Project},
 };
 use crate::ui::LaserApp;
 
@@ -207,6 +207,133 @@ impl LaserApp {
         layer.params.pixels_per_mm = px_per_mm.max(1.0);
         layer.params.threshold = 128;
         layer.params.invert = true;
+
+        Ok(layer)
+    }
+
+    pub(crate) fn add_svg_pcb_interactive(&mut self) {
+        let Some(paths) = rfd::FileDialog::new()
+            .add_filter("PCB SVG", &["svg"])
+            .pick_files()
+        else {
+            return;
+        };
+
+        for path in paths {
+            self.add_svg_pcb_from_path(&path);
+        }
+
+        self.center_view();
+    }
+
+    pub(crate) fn add_svg_pcb_from_path(&mut self, path: &Path) {
+        match self.create_svg_pcb_layer(path) {
+            Ok(layer) => {
+                let name = layer.name.clone();
+                self.project.add_layer(layer);
+                log::info!("{}", t!("ui.info.layer_added", name = name));
+            }
+            Err(e) => log::error!("{}", t!("ui.error.add_layer", e = e)),
+        }
+    }
+
+    fn create_svg_pcb_layer(&self, path: &Path) -> Result<Layer, String> {
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("PCB Svg")
+            .to_string();
+
+        let mut layer = Layer::new(
+            stem,
+            [255, 255, 255],
+            LayerSource::Svg {
+                path: path.to_string_lossy().to_string(),
+            },
+        );
+
+        layer.params.engrave_mode = EngraveMode::Lines;
+        layer.params.pixels_per_mm = 10.0;
+
+        let img = svg_trace::rasterize_svg_to_image(path, 1024)?;
+        let width_mm = DEFAULT_LAYER_WIDTH_MM;
+        let height_mm = width_mm * (img.height() as f64 / img.width() as f64);
+
+        layer.set_bounds(0.0, 0.0, width_mm, height_mm);
+
+        Ok(layer)
+    }
+
+    pub(crate) fn add_gerber_interactive(&mut self) {
+        let Some(paths) = rfd::FileDialog::new()
+            .add_filter("Gerber", &["gbr", "ger"])
+            .pick_files()
+        else {
+            return;
+        };
+
+        for path in paths {
+            self.add_gerber_from_path(&path);
+        }
+
+        self.center_view();
+    }
+
+    pub(crate) fn add_gerber_from_path(&mut self, path: &Path) {
+        match self.create_gerber_layer(path) {
+            Ok(layer) => {
+                let name = layer.name.clone();
+                self.project.add_layer(layer);
+                log::info!("{}", t!("ui.info.layer_added", name = name));
+            }
+            Err(e) => log::error!("{}", t!("ui.error.add_layer", e = e)),
+        }
+    }
+
+    fn create_gerber_layer(&self, path: &Path) -> Result<Layer, String> {
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Gerber")
+            .to_string();
+
+        let mut layer = Layer::new(
+            stem,
+            [200, 220, 200],
+            LayerSource::Gerber {
+                path: path.to_string_lossy().to_string(),
+            },
+        );
+
+        layer.params.engrave_mode = EngraveMode::Lines;
+
+        let paths = crate::core::image::gerber::parse_gerber(path)?;
+
+        let mut min_x = f64::INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+
+        for p in &paths {
+            for pt in &p.points {
+                min_x = min_x.min(pt.0);
+                min_y = min_y.min(pt.1);
+                max_x = max_x.max(pt.0);
+                max_y = max_y.max(pt.1);
+            }
+        }
+
+        if min_x.is_finite() && min_y.is_finite() {
+            let w = (max_x - min_x).max(1.0);
+            let h = (max_y - min_y).max(1.0);
+
+            let target_w = 100.0;
+            let scale = target_w / w.max(h);
+
+            layer.set_bounds(0.0, 0.0, w * scale, h * scale);
+        } else {
+            layer.set_bounds(0.0, 0.0, DEFAULT_LAYER_WIDTH_MM, DEFAULT_LAYER_WIDTH_MM);
+        }
 
         Ok(layer)
     }

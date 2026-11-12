@@ -127,6 +127,11 @@ impl LaserApp {
                     log::info!("{}", t!("comm.info.disconnected"));
                     self.grbl_status = None;
                 }
+                GrblEvent::WorkArea(w, h) => {
+                    log::info!("Work area from controller: {:.1} x {:.1} mm", w, h);
+                    self.project.machine.work_area_mm = (w, h);
+                    self.center_view();
+                }
                 GrblEvent::Status(st) => {
                     self.grbl_status = Some(st);
                 }

@@ -28,7 +28,6 @@ pub enum StreamerState {
 }
 
 const RX_BUFFER_SIZE: usize = 120;
-
 const OK_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub struct Streamer {
@@ -84,7 +83,15 @@ fn run_loop(cmd_rx: Receiver<StreamerCommand>, events_tx: Sender<GrblEvent>) {
                 StreamerCommand::Connect { port, baudrate } => {
                     let _ = events_tx.send(GrblEvent::Error(format!("Connecting to {}...", port)));
                     match GrblConnection::open(&port, baudrate) {
-                        Ok(conn) => {
+                        Ok(mut conn) => {
+                            if let Ok(Some((w, h))) = conn.fetch_work_area() {
+                                println!("Work area from controller: {:.1} x {:.1} mm", w, h);
+                                log::info!("Work area from controller: {:.1} x {:.1} mm", w, h);
+                                let _ = events_tx.send(GrblEvent::WorkArea(w, h));
+                            } else {
+                                println!("Failed to retrieve work area from controller");
+                                log::warn!("Failed to retrieve work area from controller");
+                            }
                             grbl = Some(conn);
                             let _ = events_tx.send(GrblEvent::Connected);
                         }

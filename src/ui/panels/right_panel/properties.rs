@@ -1,7 +1,6 @@
-
 use rust_i18n::t;
 
-use crate::core::layer::{LayerParams, LayerSource};
+use crate::core::layer::{EngraveMode, LayerParams, LayerSource};
 use crate::ui::LaserApp;
 
 impl LaserApp {
@@ -107,11 +106,21 @@ impl LaserApp {
 
         ui.checkbox(&mut new_params.dynamic_power, t!("ui.label.dynamic_power"));
 
+        let is_svg = matches!(self.project.layers[idx].source, LayerSource::Svg { .. });
+        if is_svg {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("Mode:");
+                ui.selectable_value(&mut new_params.engrave_mode, EngraveMode::Raster, "Raster");
+                ui.selectable_value(&mut new_params.engrave_mode, EngraveMode::Lines, "Lines");
+            });
+        }
+
         let is_raster = matches!(
             self.project.layers[idx].source,
             LayerSource::Image { .. } | LayerSource::Svg { .. }
         );
-        if is_raster {
+        if is_raster && (is_svg && new_params.engrave_mode == EngraveMode::Raster || !is_svg) {
             ui.add_space(8.0);
             ui.separator();
             ui.add_space(4.0);
@@ -141,6 +150,7 @@ impl LaserApp {
             || layer.params.threshold != new_params.threshold
             || layer.params.dither != new_params.dither
             || layer.params.invert != new_params.invert
+            || layer.params.engrave_mode != new_params.engrave_mode
         {
             layer.params = new_params;
         }

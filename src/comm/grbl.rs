@@ -1,4 +1,3 @@
- 
 use std::fmt;
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
@@ -106,6 +105,47 @@ impl GrblConnection {
         Ok(Self { conn })
     }
 
+    pub fn fetch_work_area(&mut self) -> Result<Option<(f64, f64)>, GrblError> {
+        while let Ok(Some(_)) = self.conn.read_line() {}
+
+        self.conn.write_line("$$")?;
+
+        let mut max_x: Option<f64> = None;
+        let mut max_y: Option<f64> = None;
+        let timeout = Instant::now() + Duration::from_secs(3);
+
+        while Instant::now() < timeout {
+            match self.conn.read_line()? {
+                Some(line) => {
+                    let line = line.trim();
+                    if line == "ok" {
+                        break;
+                    }
+                    if let Some((key, val)) = line.split_once('=') {
+                        let key = key.trim();
+                        let val = val.trim();
+                        match key {
+                            "$130" => max_x = val.parse::<f64>().ok(),
+                            "$131" => max_y = val.parse::<f64>().ok(),
+                            _ => {}
+                        }
+                    }
+                }
+                None => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
+
+        if let (Some(x), Some(y)) = (max_x, max_y) {
+            if x > 0.0 && y > 0.0 {
+                return Ok(Some((x, y)));
+            }
+        }
+
+        Ok(None)
+    }
+
     pub fn send_and_wait_ok(&mut self, line: &str) -> Result<(), GrblError> {
         self.conn.write_line(line)?;
 
@@ -192,6 +232,7 @@ pub enum GrblEvent {
     Connected,
     Disconnected,
     Status(GrblStatus),
+    WorkArea(f64, f64),
     Ok,
     Error(String),
     Alarm(String),

@@ -9,11 +9,19 @@ pub enum LayerUnit {
     Inch,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum EngraveMode {
+    #[default]
+    Raster,
+    Lines,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum LayerSource {
     Image { path: String },
     Svg { path: String },
     Gcode { path: String },
+    Gerber { path: String },
     Vector,
 }
 
@@ -23,6 +31,7 @@ impl LayerSource {
             LayerSource::Image { .. } => "image",
             LayerSource::Svg { .. } => "svg",
             LayerSource::Gcode { .. } => "gcode",
+            LayerSource::Gerber { .. } => "gerber",
             LayerSource::Vector => "vector",
         }
     }
@@ -53,6 +62,9 @@ pub struct LayerParams {
 
     #[serde(default)]
     pub invert: bool,
+
+    #[serde(default)]
+    pub engrave_mode: EngraveMode,
 }
 
 impl Default for LayerParams {
@@ -66,6 +78,7 @@ impl Default for LayerParams {
             threshold: default_threshold(),
             dither: false,
             invert: false,
+            engrave_mode: EngraveMode::Raster,
         }
     }
 }
@@ -119,9 +132,7 @@ impl Default for VectorShape {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Layer {
     pub name: String,
-
     pub color: [u8; 3],
-
     pub source: LayerSource,
 
     #[serde(default = "default_true")]
