@@ -72,6 +72,75 @@ impl LaserApp {
             egui::FontId::monospace(14.0),
             color,
         );
+
+        let mut has_selection = !self.ui_state.selection.layers.is_empty();
+        if self.ui_state.selection.layer.is_some() {
+            has_selection = true;
+        }
+
+        response.context_menu(|ui| {
+            if ui
+                .add_enabled(has_selection, egui::Button::new("Copy"))
+                .clicked()
+            {
+                self.copy_selection();
+                ui.close();
+            }
+            if ui
+                .add_enabled(has_selection, egui::Button::new("Delete"))
+                .clicked()
+            {
+                self.delete_selection_public();
+                ui.close();
+            }
+            ui.separator();
+            if ui
+                .add_enabled(has_selection, egui::Button::new("Round X to 0.1"))
+                .clicked()
+            {
+                self.align_selection(0.1);
+                ui.close();
+            }
+            if ui
+                .add_enabled(has_selection, egui::Button::new("Round X to 1.0"))
+                .clicked()
+            {
+                self.align_selection(1.0);
+                ui.close();
+            }
+        });
+    }
+
+    pub(crate) fn align_selection(&mut self, step: f64) {
+        let sel = self.ui_state.selection.clone();
+        let mut ids = sel.layers.clone();
+        if let Some(id) = sel.layer {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        if ids.is_empty() {
+            return;
+        }
+        self.push_history();
+        for id in ids {
+            if let Some(layer) = self.project.layers.get_mut(id) {
+                layer.offset[0] = (layer.offset[0] / step).round() * step;
+                layer.offset[1] = (layer.offset[1] / step).round() * step;
+                if let Some(b) = layer.bounds.as_mut() {
+                    b[0] = (b[0] / step).round() * step;
+                    b[1] = (b[1] / step).round() * step;
+                    b[2] = (b[2] / step).round() * step;
+                    b[3] = (b[3] / step).round() * step;
+                }
+                for shape in &mut layer.shapes {
+                    for node in &mut shape.nodes {
+                        node.point.x = (node.point.x / step).round() * step;
+                        node.point.y = (node.point.y / step).round() * step;
+                    }
+                }
+            }
+        }
     }
 
     pub(crate) fn zoom_in(&mut self) {

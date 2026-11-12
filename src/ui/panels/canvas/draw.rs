@@ -121,7 +121,7 @@ pub fn render_layers(
         if !layer.is_visible {
             continue;
         }
-        let layer_selected = selection.layer == Some(i);
+        let layer_selected = selection.is_layer_selected(i);
         draw_layer(
             ui,
             painter,

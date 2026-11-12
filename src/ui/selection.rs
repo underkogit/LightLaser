@@ -2,6 +2,7 @@ use crate::core::vector::{CurvePoint, VectorPath};
 
 #[derive(Debug, Clone, Default)]
 pub struct Selection {
+    pub layers: Vec<usize>,
     pub layer: Option<usize>,
     pub shape: Option<usize>,
     pub node: Option<usize>,
@@ -16,10 +17,11 @@ pub enum HandleKind {
 
 impl Selection {
     pub fn is_empty(&self) -> bool {
-        self.layer.is_none()
+        self.layers.is_empty() && self.layer.is_none()
     }
 
     pub fn clear(&mut self) {
+        self.layers.clear();
         self.layer = None;
         self.shape = None;
         self.node = None;
@@ -27,6 +29,30 @@ impl Selection {
     }
 
     pub fn clear_nodes(&mut self) {
+        self.node = None;
+        self.handle = None;
+    }
+
+    pub fn is_layer_selected(&self, idx: usize) -> bool {
+        self.layers.contains(&idx) || self.layer == Some(idx)
+    }
+
+    pub fn toggle_layer(&mut self, idx: usize) {
+        if let Some(pos) = self.layers.iter().position(|&x| x == idx) {
+            self.layers.remove(pos);
+        } else {
+            self.layers.push(idx);
+        }
+        self.layer = self.layers.last().copied();
+        self.shape = None;
+        self.node = None;
+        self.handle = None;
+    }
+
+    pub fn set_single_layer(&mut self, idx: usize) {
+        self.layers = vec![idx];
+        self.layer = Some(idx);
+        self.shape = None;
         self.node = None;
         self.handle = None;
     }

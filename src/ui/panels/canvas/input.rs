@@ -1,7 +1,9 @@
 use egui::{CursorIcon, Response, Vec2};
 
 use crate::core::layer::{Layer, LayerSource, VectorShape};
-use crate::core::tools::{ToolCommit, ToolContext, ToolEvent, ToolKind, ToolModifiers, ToolResponse};
+use crate::core::tools::{
+    ToolCommit, ToolContext, ToolEvent, ToolKind, ToolModifiers, ToolResponse,
+};
 use crate::core::vector::{CurvePoint, PathNode, VectorPath};
 use crate::ui::{
     CanvasTransform, LaserApp, colors,
@@ -43,7 +45,7 @@ pub fn handle_interaction(
         handle_tool_input(app, ui, response, transform, &modifiers);
         ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
     } else {
-        handle_select_input(app, ui, response, transform, &world);
+        handle_select_input(app, ui, response, transform, &world, &modifiers);
     }
 }
 
@@ -53,6 +55,7 @@ fn handle_select_input(
     response: &Response,
     transform: &CanvasTransform,
     world: &CurvePoint,
+    modifiers: &ToolModifiers,
 ) {
     let world = *world;
     let tol_mm = (8.0 / transform.scale.max(0.0001) as f64).max(0.2);
@@ -68,7 +71,7 @@ fn handle_select_input(
     update_cursor(app, ui, response, world, tol_mm);
 
     if ui.input(|i| i.pointer.primary_pressed()) {
-        handle_primary_down(app, world, tol_mm);
+        handle_primary_down(app, world, tol_mm, modifiers);
     }
 
     if ui.input(|i| i.pointer.primary_released()) {
@@ -77,7 +80,7 @@ fn handle_select_input(
             current_world,
         } = app.canvas.drag
         {
-            apply_rubber_band_selection(app, start_world, current_world);
+            apply_rubber_band_selection(app, start_world, current_world, modifiers);
         }
         app.canvas.drag = DragMode::None;
     }
@@ -104,7 +107,9 @@ fn update_cursor(
 ) {
     if response.dragged_by(egui::PointerButton::Primary) || ui.input(|i| i.pointer.primary_down()) {
         match app.canvas.drag {
-            DragMode::MoveLayer { .. } | DragMode::Pan => ui.ctx().set_cursor_icon(CursorIcon::Grabbing),
+            DragMode::MoveLayer { .. } | DragMode::Pan => {
+                ui.ctx().set_cursor_icon(CursorIcon::Grabbing)
+            }
             DragMode::MoveNode { .. } => ui.ctx().set_cursor_icon(CursorIcon::Move),
             DragMode::MoveHandle { .. } => ui.ctx().set_cursor_icon(CursorIcon::PointingHand),
             DragMode::RubberBand { .. } => ui.ctx().set_cursor_icon(CursorIcon::Crosshair),
@@ -177,7 +182,12 @@ fn update_cursor(
     ui.ctx().set_cursor_icon(hover_icon);
 }
 
-fn handle_primary_down(app: &mut LaserApp, world: CurvePoint, tol_mm: f64) {
+fn handle_primary_down(
+    app: &mut LaserApp,
+    world: CurvePoint,
+    tol_mm: f64,
+    modifiers: &ToolModifiers,
+) {
     let mut picked = false;
     let mut changed = false;
 
@@ -279,12 +289,13 @@ fn handle_primary_down(app: &mut LaserApp, world: CurvePoint, tol_mm: f64) {
 
     if !picked {
         if let Some(li) = hit_test_layers(&app.project.layers, world) {
-            app.ui_state.selection = Selection {
-                layer: Some(li),
-                shape: None,
-                node: None,
-                handle: None,
-            };
+            if modifiers.shift {
+                app.ui_state.selection.toggle_layer(li);
+            } else {
+                if !app.ui_state.selection.is_layer_selected(li) {
+                    app.ui_state.selection.set_single_layer(li);
+                }
+            }
             let start_offset = app.project.layers[li].offset;
             app.canvas.drag = DragMode::MoveLayer {
                 start_world: world,
@@ -292,7 +303,9 @@ fn handle_primary_down(app: &mut LaserApp, world: CurvePoint, tol_mm: f64) {
             };
             changed = true;
         } else {
-            app.ui_state.selection.clear();
+            if !modifiers.shift {
+                app.ui_state.selection.clear();
+            }
             app.canvas.drag = DragMode::RubberBand {
                 start_world: world,
                 current_world: world,
@@ -309,34 +322,39 @@ fn apply_rubber_band_selection(
     app: &mut LaserApp,
     start_world: CurvePoint,
     current_world: CurvePoint,
+    modifiers: &ToolModifiers,
 ) {
     let min_x = start_world.x.min(current_world.x);
     let max_x = start_world.x.max(current_world.x);
     let min_y = start_world.y.min(current_world.y);
     let max_y = start_world.y.max(current_world.y);
 
-    let mut found = false;
-    for (i, layer) in app.project.layers.iter().enumerate().rev() {
+    let mut found_indices = Vec::new();
+    for (i, layer) in app.project.layers.iter().enumerate() {
         if !layer.is_visible {
             continue;
         }
         if let Some((lmin_x, lmin_y, lmax_x, lmax_y)) = layer.bounds() {
             if lmin_x >= min_x && lmax_x <= max_x && lmin_y >= min_y && lmax_y <= max_y {
-                app.ui_state.selection = Selection {
-                    layer: Some(i),
-                    shape: None,
-                    node: None,
-                    handle: None,
-                };
-                found = true;
-                break;
+                found_indices.push(i);
             }
         }
     }
 
-    if !found {
-        app.ui_state.selection.clear();
+    if modifiers.shift {
+        for idx in found_indices {
+            if !app.ui_state.selection.layers.contains(&idx) {
+                app.ui_state.selection.layers.push(idx);
+            }
+        }
+        app.ui_state.selection.layer = app.ui_state.selection.layers.last().copied();
+    } else {
+        app.ui_state.selection.layers = found_indices;
+        app.ui_state.selection.layer = app.ui_state.selection.layers.last().copied();
     }
+    app.ui_state.selection.shape = None;
+    app.ui_state.selection.node = None;
+    app.ui_state.selection.handle = None;
 }
 
 fn handle_drag(
@@ -364,13 +382,21 @@ fn handle_drag(
                 target_x = (target_x / step).round() * step;
                 target_y = (target_y / step).round() * step;
             }
-            if let Some(li) = app.ui_state.selection.layer {
-                if let Some(layer) = app.project.layers.get_mut(li) {
-                    let dx = target_x - layer.offset[0];
-                    let dy = target_y - layer.offset[1];
-                    if dx != 0.0 || dy != 0.0 {
-                        layer.translate(dx, dy);
-                    }
+            let move_ids = if app.ui_state.selection.layers.is_empty() {
+                vec![app.ui_state.selection.layer.unwrap()]
+            } else {
+                app.ui_state.selection.layers.clone()
+            };
+
+            let ref_idx = app.ui_state.selection.layer.unwrap_or(0);
+            let ref_offset = app.project.layers[ref_idx].offset;
+
+            let dx = target_x - ref_offset[0];
+            let dy = target_y - ref_offset[1];
+
+            for &id in &move_ids {
+                if let Some(layer) = app.project.layers.get_mut(id) {
+                    layer.translate(dx, dy);
                 }
             }
         }
@@ -447,6 +473,14 @@ fn delete_selected(app: &mut LaserApp) {
         app.ui_state.selection.shape = None;
         app.ui_state.selection.node = None;
         app.ui_state.selection.handle = None;
+    } else if !sel.layers.is_empty() {
+        app.push_history();
+        let mut to_remove = sel.layers.clone();
+        to_remove.sort_unstable_by(|a, b| b.cmp(a));
+        for idx in to_remove {
+            app.project.remove_layer(idx);
+        }
+        app.ui_state.selection.clear();
     }
 }
 
@@ -504,7 +538,10 @@ fn handle_tool_input(
         events.push(ToolEvent::Enter);
     }
 
-    let double_click = ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary));
+    let double_click = ui.input(|i| {
+        i.pointer
+            .button_double_clicked(egui::PointerButton::Primary)
+    });
     if double_click {
         events.push(ToolEvent::Finish);
     }
@@ -574,12 +611,10 @@ fn apply_commits(app: &mut LaserApp, commits: Vec<ToolCommit>) {
     app.project.add_layer(layer);
     let new_idx = app.project.layers.len() - 1;
     let new_si = app.project.layers[new_idx].shapes.len().saturating_sub(1);
-    app.ui_state.selection = Selection {
-        layer: Some(new_idx),
-        shape: Some(new_si),
-        node: None,
-        handle: None,
-    };
+    app.ui_state.selection.set_single_layer(new_idx);
+    app.ui_state.selection.shape = Some(new_si);
+    app.ui_state.selection.node = None;
+    app.ui_state.selection.handle = None;
 }
 
 fn hit_test_layers(layers: &[Layer], p: CurvePoint) -> Option<usize> {

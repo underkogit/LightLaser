@@ -56,7 +56,7 @@ pub struct LaserApp {
     pub(crate) connection_dialog_open: bool,
     pub(crate) export_dialog_open: bool,
 
-    pub(crate) clipboard: Option<crate::core::layer::Layer>,
+    pub(crate) clipboard: Option<Vec<crate::core::layer::Layer>>,
 }
 
 impl LaserApp {
@@ -310,43 +310,55 @@ impl LaserApp {
                 let mut layer_clone = layer.clone();
                 layer_clone.shapes = vec![shape.clone()];
                 layer_clone.recompute_bounds();
-                self.clipboard = Some(layer_clone);
+                self.clipboard = Some(vec![layer_clone]);
                 log::info!("COPY SUCCESS: Shape {} from layer {} copied", si, li);
             } else {
                 log::warn!("COPY FAILED: Shape {} not found in layer {}", si, li);
             }
         } else {
-            self.clipboard = Some(layer.clone());
-            log::info!("COPY SUCCESS: Layer {} copied", li);
+            let mut layers = Vec::new();
+            let ids = if sel.layers.is_empty() {
+                vec![li]
+            } else {
+                sel.layers
+            };
+            for id in ids {
+                if let Some(l) = self.project.layers.get(id) {
+                    layers.push(l.clone());
+                }
+            }
+            self.clipboard = Some(layers);
+            log::info!(
+                "COPY SUCCESS: {} layers copied",
+                self.clipboard.as_ref().unwrap().len()
+            );
         }
     }
 
     fn paste_selection(&mut self) {
         let clipboard = self.clipboard.clone();
 
-        if let Some(mut layer_src) = clipboard {
-            log::info!(
-                "PASTE ATTEMPT: Found layer in memory with {} shapes",
-                layer_src.shapes.len()
-            );
+        if let Some(layers_src) = clipboard {
             self.push_history();
             let offset = self.duplicate_offset();
-            for shape in &mut layer_src.shapes {
-                for n in &mut shape.nodes {
-                    n.translate(offset, offset);
+            let mut new_ids = Vec::new();
+            for mut layer_src in layers_src {
+                for shape in &mut layer_src.shapes {
+                    for n in &mut shape.nodes {
+                        n.translate(offset, offset);
+                    }
                 }
+                layer_src.recompute_bounds();
+                layer_src.name = format!("{} copy", layer_src.name);
+                self.project.add_layer(layer_src);
+                new_ids.push(self.project.layers.len() - 1);
             }
-            layer_src.recompute_bounds();
-            layer_src.name = format!("{} copy", layer_src.name);
-            self.project.add_layer(layer_src);
-            let new_idx = self.project.layers.len() - 1;
-            self.ui_state.selection = Selection {
-                layer: Some(new_idx),
-                shape: None,
-                node: None,
-                handle: None,
-            };
-            log::info!("PASTE SUCCESS: Layer pasted as index {}", new_idx);
+            self.ui_state.selection.layers = new_ids.clone();
+            self.ui_state.selection.layer = new_ids.last().copied();
+            self.ui_state.selection.shape = None;
+            self.ui_state.selection.node = None;
+            self.ui_state.selection.handle = None;
+            log::info!("PASTE SUCCESS: {} layers pasted", new_ids.len());
         } else {
             log::warn!("PASTE FAILED: Memory clipboard is empty");
         }
@@ -378,36 +390,39 @@ impl LaserApp {
                 layer_dst.shapes.push(new_shape);
                 layer_dst.recompute_bounds();
                 let new_si = layer_dst.shapes.len() - 1;
-                self.ui_state.selection = Selection {
-                    layer: Some(li),
-                    shape: Some(new_si),
-                    node: None,
-                    handle: None,
-                };
+                self.ui_state.selection.shape = Some(new_si);
+                self.ui_state.selection.node = None;
+                self.ui_state.selection.handle = None;
                 log::info!("DUPLICATE SUCCESS: Shape {} duplicated", si);
             }
             return;
         }
 
-        let mut new_layer = layer_src.clone();
-        new_layer.name = format!("{} copy", new_layer.name);
+        let ids = if sel.layers.is_empty() {
+            vec![li]
+        } else {
+            sel.layers
+        };
         self.push_history();
         let offset = self.duplicate_offset();
-        for shape in &mut new_layer.shapes {
-            for n in &mut shape.nodes {
-                n.translate(offset, offset);
+        let mut new_ids = Vec::new();
+        for id in ids {
+            if let Some(src) = self.project.layers.get(id) {
+                let mut new_layer = src.clone();
+                new_layer.name = format!("{} copy", new_layer.name);
+                for shape in &mut new_layer.shapes {
+                    for n in &mut shape.nodes {
+                        n.translate(offset, offset);
+                    }
+                }
+                new_layer.recompute_bounds();
+                self.project.add_layer(new_layer);
+                new_ids.push(self.project.layers.len() - 1);
             }
         }
-        new_layer.recompute_bounds();
-        self.project.add_layer(new_layer);
-        let new_idx = self.project.layers.len() - 1;
-        self.ui_state.selection = Selection {
-            layer: Some(new_idx),
-            shape: None,
-            node: None,
-            handle: None,
-        };
-        log::info!("DUPLICATE SUCCESS: Layer {} duplicated", li);
+        self.ui_state.selection.layers = new_ids.clone();
+        self.ui_state.selection.layer = new_ids.last().copied();
+        log::info!("DUPLICATE SUCCESS: {} layers duplicated", new_ids.len());
     }
 
     fn duplicate_offset(&self) -> f64 {

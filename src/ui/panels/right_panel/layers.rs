@@ -1,8 +1,8 @@
 use egui::{Align, Layout};
 use rust_i18n::t;
 
-use crate::ui::selection::Selection;
 use crate::ui::LaserApp;
+use crate::ui::selection::Selection;
 
 impl LaserApp {
     pub(crate) fn ui_layer_list(&mut self, ui: &mut egui::Ui) {
@@ -10,11 +10,17 @@ impl LaserApp {
         let mut to_move_up: Option<usize> = None;
         let mut to_move_down: Option<usize> = None;
         let mut new_selection: Option<usize> = self.ui_state.selection.layer;
+        let mut toggle_selection: Option<usize> = None;
 
         let selected = self.ui_state.selection.layer;
 
+        let mut shift_pressed = false;
+        ui.input(|i| {
+            shift_pressed = i.modifiers.shift;
+        });
+
         for (i, layer) in self.project.layers.iter_mut().enumerate() {
-            let is_selected = selected == Some(i);
+            let is_selected = selected == Some(i) || self.ui_state.selection.layers.contains(&i);
 
             let frame = egui::Frame::group(ui.style())
                 .fill(if is_selected {
@@ -39,7 +45,11 @@ impl LaserApp {
                             .sense(egui::Sense::click()),
                     );
                     if resp.clicked() {
-                        new_selection = Some(i);
+                        if shift_pressed {
+                            toggle_selection = Some(i);
+                        } else {
+                            new_selection = Some(i);
+                        }
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -68,7 +78,7 @@ impl LaserApp {
                                     "{}",
                                     egui_phosphor::regular::ARROW_DOWN
                                 ))
-                                    .small(),
+                                .small(),
                             )
                             .clicked()
                         {
@@ -115,13 +125,14 @@ impl LaserApp {
             }
         }
 
-        if new_selection != self.ui_state.selection.layer {
-            self.ui_state.selection = Selection {
-                layer: new_selection,
-                shape: None,
-                node: None,
-                handle: None,
-            };
+        if let Some(i) = toggle_selection {
+            self.ui_state.selection.toggle_layer(i);
+        } else if new_selection != self.ui_state.selection.layer {
+            let mut sel = Selection::default();
+            if let Some(idx) = new_selection {
+                sel.set_single_layer(idx);
+            }
+            self.ui_state.selection = sel;
         }
     }
 }
