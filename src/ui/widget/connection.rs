@@ -1,4 +1,3 @@
-
 use egui::{Align, Layout};
 use rust_i18n::t;
 
@@ -79,7 +78,10 @@ impl LaserApp {
                         let port = self.project.machine.port.clone();
                         let baudrate = self.project.machine.baudrate;
 
-                        self.streamer.send(StreamerCommand::Connect { port: port.clone(), baudrate });
+                        self.streamer.send(StreamerCommand::Connect {
+                            port: port.clone(),
+                            baudrate,
+                        });
                         log::info!("{}", t!("comm.info.connecting", port = port));
                         open = false;
                     }

@@ -133,7 +133,10 @@ impl Tool for CurveTool {
         if let Some(last) = self.nodes.last() {
             let a = to_screen(last.point);
             let b = to_screen(self.current);
-            preview.polylines.push((vec![a, b], Color32::from_rgba_unmultiplied(80, 200, 255, 80)));
+            preview.polylines.push((
+                vec![a, b],
+                Color32::from_rgba_unmultiplied(80, 200, 255, 80),
+            ));
         }
 
         for node in &self.nodes {

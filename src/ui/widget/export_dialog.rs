@@ -77,7 +77,7 @@ impl LaserApp {
             .as_ref()
             .and_then(|p| p.file_stem())
             .and_then(|s| s.to_str())
-            .unwrap_or("lightlazer");
+            .unwrap_or("LightLaser");
 
         let Some(path) = rfd::FileDialog::new()
             .add_filter("G-code", &["nc", "gcode"])

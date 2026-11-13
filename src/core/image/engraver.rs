@@ -38,7 +38,9 @@ pub fn engrave_segments(
         return Err(EngraveError::EmptyRaster);
     }
     if params.feed_rate <= 0.0 {
-        return Err(EngraveError::InvalidParams("feed_rate must be > 0".to_string()));
+        return Err(EngraveError::InvalidParams(
+            "feed_rate must be > 0".to_string(),
+        ));
     }
 
     let step_x = (raster.width_mm / raster.px_width as f64).max(1e-6);

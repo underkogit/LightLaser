@@ -31,7 +31,10 @@ impl FileBackend {
 
 impl rust_i18n::Backend for FileBackend {
     fn available_locales(&self) -> Vec<Cow<'_, str>> {
-        self.translations.keys().map(|k| Cow::from(k.as_str())).collect()
+        self.translations
+            .keys()
+            .map(|k| Cow::from(k.as_str()))
+            .collect()
     }
 
     fn translate(&self, locale: &str, key: &str) -> Option<Cow<'_, str>> {

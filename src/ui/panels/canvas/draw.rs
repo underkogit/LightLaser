@@ -369,14 +369,10 @@ fn draw_vector_layer(
                 if is_sel && node.has_handles() {
                     let hi = transform.to_screen(node.handle_in.x, node.handle_in.y);
                     let ho = transform.to_screen(node.handle_out.x, node.handle_out.y);
-                    painter.line_segment(
-                        [p, hi],
-                        Stroke::new(1.0, Color32::from_rgb(120, 200, 255)),
-                    );
-                    painter.line_segment(
-                        [p, ho],
-                        Stroke::new(1.0, Color32::from_rgb(120, 200, 255)),
-                    );
+                    painter
+                        .line_segment([p, hi], Stroke::new(1.0, Color32::from_rgb(120, 200, 255)));
+                    painter
+                        .line_segment([p, ho], Stroke::new(1.0, Color32::from_rgb(120, 200, 255)));
                     let in_col = if selected_handle == Some(HandleKind::In) {
                         Color32::from_rgb(255, 120, 120)
                     } else {

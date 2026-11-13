@@ -49,7 +49,9 @@ fn thinning_zhang_suen(img: &mut [u8], w: usize, h: usize) {
         for y in 1..h - 1 {
             for x in 1..w - 1 {
                 let idx = y * w + x;
-                if img[idx] == 0 { continue; }
+                if img[idx] == 0 {
+                    continue;
+                }
 
                 let p2 = img[(y - 1) * w + x];
                 let p3 = img[(y - 1) * w + (x + 1)];
@@ -87,7 +89,9 @@ fn thinning_zhang_suen(img: &mut [u8], w: usize, h: usize) {
         for y in 1..h - 1 {
             for x in 1..w - 1 {
                 let idx = y * w + x;
-                if img[idx] == 0 { continue; }
+                if img[idx] == 0 {
+                    continue;
+                }
 
                 let p2 = img[(y - 1) * w + x];
                 let p3 = img[(y - 1) * w + (x + 1)];
@@ -195,9 +199,14 @@ pub fn trace_image_to_paths(img: &DynamicImage, threshold: u8) -> Vec<TracedPath
     let mut visited = std::collections::HashSet::new();
 
     let neighbors_dirs = [
-        (-1, -1), (0, -1), (1, -1),
-        (-1, 0),           (1, 0),
-        (-1, 1),  (0, 1),  (1, 1)
+        (-1, -1),
+        (0, -1),
+        (1, -1),
+        (-1, 0),
+        (1, 0),
+        (-1, 1),
+        (0, 1),
+        (1, 1),
     ];
 
     for &start in &points {
@@ -245,7 +254,6 @@ pub fn trace_image_to_paths(img: &DynamicImage, threshold: u8) -> Vec<TracedPath
 
     paths
 }
-
 
 pub fn traced_paths_to_gcode(
     paths: &[TracedPath],

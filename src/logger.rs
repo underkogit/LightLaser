@@ -17,10 +17,9 @@ pub struct MultiLogger {
 
 impl MultiLogger {
     pub fn new(buffer: Arc<Mutex<VecDeque<LogEntry>>>) -> Self {
-        let console = env_logger::Builder::from_env(
-            env_logger::Env::default().default_filter_or("info"),
-        )
-            .build();
+        let console =
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+                .build();
         Self { console, buffer }
     }
 }

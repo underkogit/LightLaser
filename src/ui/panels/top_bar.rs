@@ -171,7 +171,7 @@ impl LaserApp {
         });
 
         ui.menu_button(help_label, |ui| {
-            ui.label(format!("LightLazer v{}", env!("CARGO_PKG_VERSION")));
+            ui.label(format!("LightLaser v{}", env!("CARGO_PKG_VERSION")));
         });
     }
 

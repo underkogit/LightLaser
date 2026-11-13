@@ -1,9 +1,9 @@
-# LightLazer
+# LightLaser
 
-![LightLazer](images/LightLaser_aQjJS8K7E0.png)
-![LightLazer](images/LightLaser_kVOATA2Uyo.png)
+![LightLaser](images/LightLaser_aQjJS8K7E0.png)
+![LightLaser](images/LightLaser_kVOATA2Uyo.png)
 
-LightLazer is a desktop laser engraving and cutting control application written in Rust. It provides a graphical interface for composing jobs from images, SVG files, G-code files, and vector drawing tools, then streaming the resulting G-code to a GRBL-based laser controller over a serial port.
+LightLaser is a desktop laser engraving and cutting control application written in Rust. It provides a graphical interface for composing jobs from images, SVG files, G-code files, and vector drawing tools, then streaming the resulting G-code to a GRBL-based laser controller over a serial port.
 
 ## Features
 

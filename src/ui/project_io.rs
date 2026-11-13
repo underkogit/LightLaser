@@ -18,7 +18,7 @@ impl LaserApp {
 
     pub(crate) fn open_project_interactive(&mut self) {
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("LightLazer project", &["toml"])
+            .add_filter("LightLaser project", &["toml"])
             .pick_file()
         else {
             return;
@@ -48,7 +48,7 @@ impl LaserApp {
 
     pub(crate) fn save_project_as_interactive(&mut self) {
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("LightLazer project", &["toml"])
+            .add_filter("LightLaser project", &["toml"])
             .set_file_name("project.toml")
             .save_file()
         else {

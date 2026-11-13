@@ -110,4 +110,4 @@ fn default_grid_step() -> f64 {
     5.0
 }
 
-pub const GRID_STEPS: &[f64] = &[1.0, 2.5, 5.0, 10.0, 25.0];    
+pub const GRID_STEPS: &[f64] = &[1.0, 2.5, 5.0, 10.0, 25.0];

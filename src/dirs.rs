@@ -1,5 +1,5 @@
 use std::path::PathBuf;
- 
+
 pub fn get_config_dir() -> Option<PathBuf> {
     std::env::current_exe()
         .ok()

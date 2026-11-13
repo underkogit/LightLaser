@@ -31,7 +31,7 @@ fn main() {
     log::set_boxed_logger(Box::new(logger)).unwrap();
     log::set_max_level(max_level);
 
-    log::info!("LightLazer v{} starting", VERSION);
+    log::info!("LightLaser v{} starting", VERSION);
 
     let config_folder = match get_config_dir() {
         Some(f) => f,
@@ -60,7 +60,7 @@ fn main() {
 
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title(format!("LightLazer - v{VERSION}"))
+            .with_title(format!("LightLaser - v{VERSION}"))
             .with_inner_size([1200.0, 720.0])
             .with_resizable(true)
             .with_position([100.0, 100.0]),
@@ -68,7 +68,7 @@ fn main() {
     };
 
     let _ = eframe::run_native(
-        "LightLazer",
+        "LightLaser",
         native_options,
         Box::new(move |cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);

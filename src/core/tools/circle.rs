@@ -90,7 +90,10 @@ impl Tool for CircleTool {
             let mut pts: Vec<Pos2> = Vec::with_capacity(CIRCLE_SEGMENTS + 1);
             for i in 0..=CIRCLE_SEGMENTS {
                 let a = i as f64 / CIRCLE_SEGMENTS as f64 * std::f64::consts::TAU;
-                pts.push(to_screen(CurvePoint::new(c.x + a.cos() * r, c.y + a.sin() * r)));
+                pts.push(to_screen(CurvePoint::new(
+                    c.x + a.cos() * r,
+                    c.y + a.sin() * r,
+                )));
             }
             preview.polylines.push((pts, color));
             preview.points.push((center_screen, color));

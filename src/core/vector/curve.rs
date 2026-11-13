@@ -56,7 +56,8 @@ impl BezierSegment {
 
     pub fn flatten(&self, tolerance: f64, out: &mut Vec<CurvePoint>) {
         let tol = tolerance.max(0.001);
-        let rough = (self.p0.x - self.p1.x).abs() + (self.p0.y - self.p1.y).abs()
+        let rough = (self.p0.x - self.p1.x).abs()
+            + (self.p0.y - self.p1.y).abs()
             + (self.c1.x - self.p0.x).abs()
             + (self.c1.y - self.p0.y).abs()
             + (self.c2.x - self.p1.x).abs()
@@ -99,19 +100,8 @@ impl Bezier {
         self.segments.push(BezierSegment::line(from, to));
     }
 
-    pub fn add_cubic(
-        &mut self,
-        p0: CurvePoint,
-        c1: CurvePoint,
-        c2: CurvePoint,
-        p1: CurvePoint,
-    ) {
-        self.segments.push(BezierSegment {
-            p0,
-            c1,
-            c2,
-            p1,
-        });
+    pub fn add_cubic(&mut self, p0: CurvePoint, c1: CurvePoint, c2: CurvePoint, p1: CurvePoint) {
+        self.segments.push(BezierSegment { p0, c1, c2, p1 });
     }
 
     pub fn is_empty(&self) -> bool {

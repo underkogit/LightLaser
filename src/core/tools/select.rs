@@ -1,6 +1,4 @@
-use crate::core::tools::tool::{
-    Tool, ToolContext, ToolEvent, ToolKind, ToolPreview, ToolResponse,
-};
+use crate::core::tools::tool::{Tool, ToolContext, ToolEvent, ToolKind, ToolPreview, ToolResponse};
 
 #[derive(Default)]
 pub struct SelectTool;
@@ -30,7 +28,10 @@ impl Tool for SelectTool {
         ToolResponse::None
     }
 
-    fn preview(&self, _to_screen: &dyn Fn(crate::core::vector::CurvePoint) -> egui::Pos2) -> ToolPreview {
+    fn preview(
+        &self,
+        _to_screen: &dyn Fn(crate::core::vector::CurvePoint) -> egui::Pos2,
+    ) -> ToolPreview {
         ToolPreview::default()
     }
 }

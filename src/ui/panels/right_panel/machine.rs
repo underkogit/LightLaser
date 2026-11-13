@@ -80,7 +80,7 @@ impl LaserApp {
                     .desired_width(ui.available_width())
                     .show_percentage(),
             )
-                .on_hover_text(format!("{} / {}", sent, total));
+            .on_hover_text(format!("{} / {}", sent, total));
         }
 
         ui.add_space(4.0);
@@ -183,7 +183,7 @@ impl LaserApp {
                     .range(0.1..=100.0)
                     .suffix(" mm"),
             )
-                .on_hover_text(t!("ui.tooltip.jog_step"));
+            .on_hover_text(t!("ui.tooltip.jog_step"));
         });
 
         ui.label("Feed rate");
@@ -195,7 +195,7 @@ impl LaserApp {
                     .range(1.0..=20000.0)
                     .suffix(" mm/min"),
             )
-                .on_hover_text("Jog feed rate");
+            .on_hover_text("Jog feed rate");
         });
 
         ui.add_space(4.0);

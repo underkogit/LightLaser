@@ -172,6 +172,8 @@ impl eframe::App for LaserApp {
         let mut duplicate = false;
         let mut save = false;
         let mut save_as = false;
+        let mut undo = false;
+        let mut redo = false;
         let mut dropped_paths: Vec<PathBuf> = Vec::new();
 
         ui.ctx().input(|i| {
@@ -199,6 +201,14 @@ impl eframe::App for LaserApp {
                                     save = true;
                                 }
                             }
+                            egui::Key::Z => {
+                                if modifiers.shift {
+                                    redo = true;
+                                } else {
+                                    undo = true;
+                                }
+                            }
+                            egui::Key::Y => redo = true,
                             _ => {}
                         }
                     }
@@ -228,6 +238,14 @@ impl eframe::App for LaserApp {
         if save_as {
             log::info!("Global trigger: Save As");
             self.save_project_as_interactive();
+        }
+        if undo {
+            log::info!("Global trigger: Undo");
+            self.undo();
+        }
+        if redo {
+            log::info!("Global trigger: Redo");
+            self.redo();
         }
 
         for path in dropped_paths {

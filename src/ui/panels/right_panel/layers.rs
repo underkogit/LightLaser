@@ -78,7 +78,7 @@ impl LaserApp {
                                     "{}",
                                     egui_phosphor::regular::ARROW_DOWN
                                 ))
-                                    .small(),
+                                .small(),
                             )
                             .clicked()
                         {
