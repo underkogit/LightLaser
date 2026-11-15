@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 
 use image::DynamicImage;
@@ -72,7 +73,7 @@ fn thinning_zhang_suen(img: &mut [u8], w: usize, h: usize) {
 
                 let sum: usize = neighbors.iter().map(|&v| v as usize).sum();
 
-                if transitions == 1 && sum >= 2 && sum <= 6 {
+                if transitions == 1 && (2..=6).contains(&sum) {
                     if p2 * p4 * p6 == 0 && p4 * p6 * p8 == 0 {
                         to_remove.push(idx);
                     }
@@ -112,7 +113,7 @@ fn thinning_zhang_suen(img: &mut [u8], w: usize, h: usize) {
 
                 let sum: usize = neighbors.iter().map(|&v| v as usize).sum();
 
-                if transitions == 1 && sum >= 2 && sum <= 6 {
+                if transitions == 1 && (2..=6).contains(&sum) {
                     if p2 * p4 * p8 == 0 && p2 * p6 * p8 == 0 {
                         to_remove.push(idx);
                     }
@@ -170,35 +171,8 @@ fn simplify_rdp(points: &[(f64, f64)], epsilon: f64) -> Vec<(f64, f64)> {
     }
 }
 
-pub fn trace_image_to_paths(img: &DynamicImage, threshold: u8) -> Vec<TracedPath> {
-    let gray = img.to_luma8();
-    let (w, h) = gray.dimensions();
-
-    let mut binary_img = vec![0u8; (w * h) as usize];
-    for y in 0..h {
-        for x in 0..w {
-            let luma = gray.get_pixel(x, y).0[0];
-            if luma < threshold {
-                binary_img[(y * w + x) as usize] = 1;
-            }
-        }
-    }
-
-    thinning_zhang_suen(&mut binary_img, w as usize, h as usize);
-
-    let mut points = Vec::new();
-    for y in 0..h {
-        for x in 0..w {
-            if binary_img[(y * w + x) as usize] == 1 {
-                points.push((x as i32, y as i32));
-            }
-        }
-    }
-
-    let mut paths = Vec::new();
-    let mut visited = std::collections::HashSet::new();
-
-    let neighbors_dirs = [
+fn neighbors_of(x: i32, y: i32, w: i32, h: i32, binary: &[u8]) -> Vec<(i32, i32)> {
+    const DIRS: [(i32, i32); 8] = [
         (-1, -1),
         (0, -1),
         (1, -1),
@@ -208,46 +182,144 @@ pub fn trace_image_to_paths(img: &DynamicImage, threshold: u8) -> Vec<TracedPath
         (0, 1),
         (1, 1),
     ];
+    let mut result = Vec::new();
+    for (dx, dy) in DIRS {
+        let nx = x + dx;
+        let ny = y + dy;
+        if nx >= 0 && nx < w && ny >= 0 && ny < h {
+            if binary[(ny * w + nx) as usize] == 1 {
+                result.push((nx, ny));
+            }
+        }
+    }
+    result
+}
 
-    for &start in &points {
+pub fn trace_image_to_paths(img: &DynamicImage, threshold: u8) -> Vec<TracedPath> {
+    let gray = img.to_luma8();
+    let (w, h) = gray.dimensions();
+    let wi = w as i32;
+    let hi = h as i32;
+
+    let mut binary = vec![0u8; (w * h) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            let luma = gray.get_pixel(x, y).0[0];
+            if luma < threshold {
+                binary[(y * w + x) as usize] = 1;
+            }
+        }
+    }
+
+    thinning_zhang_suen(&mut binary, w as usize, h as usize);
+
+    let mut visited: HashSet<(i32, i32)> = HashSet::new();
+    let mut paths: Vec<TracedPath> = Vec::new();
+
+    let mut endpoints: Vec<(i32, i32)> = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            if binary[(y * w + x) as usize] == 1 {
+                let n = neighbors_of(x as i32, y as i32, wi, hi, &binary);
+                if n.len() == 1 {
+                    endpoints.push((x as i32, y as i32));
+                }
+            }
+        }
+    }
+
+    for &start in &endpoints {
         if visited.contains(&start) {
             continue;
         }
-
-        let mut path = Vec::new();
+        let mut path_pts: Vec<(f64, f64)> = Vec::new();
         let mut curr = start;
-
         loop {
             visited.insert(curr);
-            path.push((curr.0 as f64, curr.1 as f64));
+            path_pts.push((curr.0 as f64, curr.1 as f64));
 
-            let mut next_pt = None;
-            for &(dx, dy) in &neighbors_dirs {
-                let nx = curr.0 + dx;
-                let ny = curr.1 + dy;
-                if nx >= 0 && nx < w as i32 && ny >= 0 && ny < h as i32 {
-                    let n_idx = (ny as u32 * w + nx as u32) as usize;
-                    if binary_img[n_idx] == 1 && !visited.contains(&(nx, ny)) {
-                        next_pt = Some((nx, ny));
-                        break;
-                    }
+            let mut next_pt: Option<(i32, i32)> = None;
+            for n in neighbors_of(curr.0, curr.1, wi, hi, &binary) {
+                if !visited.contains(&n) {
+                    next_pt = Some(n);
+                    break;
                 }
             }
 
-            if let Some(np) = next_pt {
-                curr = np;
-            } else {
-                break;
+            match next_pt {
+                Some(np) => curr = np,
+                None => break,
             }
         }
 
-        if path.len() > 1 {
-            let simplified = simplify_rdp(&path, 0.5);
+        if path_pts.len() > 1 {
+            let simplified = simplify_rdp(&path_pts, 0.5);
             if simplified.len() > 1 {
                 paths.push(TracedPath {
                     points: simplified,
                     closed: false,
                 });
+            }
+        }
+    }
+
+    for y in 0..h {
+        for x in 0..w {
+            let start = (x as i32, y as i32);
+            if binary[(y * w + x) as usize] != 1 || visited.contains(&start) {
+                continue;
+            }
+
+            let mut path_pts: Vec<(f64, f64)> = Vec::new();
+            let mut curr = start;
+            let mut closed = false;
+            loop {
+                visited.insert(curr);
+                path_pts.push((curr.0 as f64, curr.1 as f64));
+
+                let mut next_pt: Option<(i32, i32)> = None;
+                for n in neighbors_of(curr.0, curr.1, wi, hi, &binary) {
+                    if n == start && path_pts.len() > 2 {
+                        closed = true;
+                        break;
+                    }
+                    if !visited.contains(&n) {
+                        next_pt = Some(n);
+                        break;
+                    }
+                }
+
+                if closed {
+                    break;
+                }
+
+                match next_pt {
+                    Some(np) => curr = np,
+                    None => break,
+                }
+            }
+
+            if path_pts.len() > 2 && closed {
+                let mut simplified = simplify_rdp(&path_pts, 0.5);
+                if simplified.len() > 1 {
+                    let first = simplified[0];
+                    let last = simplified[simplified.len() - 1];
+                    if (first.0 - last.0).abs() > 1e-9 || (first.1 - last.1).abs() > 1e-9 {
+                        simplified.push(first);
+                    }
+                    paths.push(TracedPath {
+                        points: simplified,
+                        closed: true,
+                    });
+                }
+            } else if path_pts.len() > 1 {
+                let simplified = simplify_rdp(&path_pts, 0.5);
+                if simplified.len() > 1 {
+                    paths.push(TracedPath {
+                        points: simplified,
+                        closed: false,
+                    });
+                }
             }
         }
     }
@@ -267,12 +339,6 @@ pub fn traced_paths_to_gcode(
     let s_max = 1000.0;
     let s_on = ((params.power_percent.clamp(0.0, 100.0) / 100.0) * s_max).round();
 
-    let laser_on = if params.dynamic_power {
-        format!("M4 S{:.0}", s_on)
-    } else {
-        format!("M3 S{:.0}", s_on)
-    };
-
     let mut cmds = Vec::new();
     let mk = |raw: String| GcodeCommand {
         raw,
@@ -290,7 +356,6 @@ pub fn traced_paths_to_gcode(
 
     cmds.push(mk("G21".to_string()));
     cmds.push(mk("G90".to_string()));
-    cmds.push(mk(laser_on));
     cmds.push(mk(format!("G1 F{:.0}", params.feed_rate)));
 
     for pass in 0..params.passes.max(1) {
@@ -307,7 +372,7 @@ pub fn traced_paths_to_gcode(
             let fx = origin.0 + first.0 * scale_x;
             let fy = origin.1 + first.1 * scale_y;
 
-            cmds.push(mk(format!("M5")));
+            cmds.push(mk("M5".to_string()));
             cmds.push(mk(format!("G0 X{:.4} Y{:.4}", fx, fy)));
 
             let laser_on_cmd = if params.dynamic_power {
@@ -321,6 +386,17 @@ pub fn traced_paths_to_gcode(
                 let px = origin.0 + pt.0 * scale_x;
                 let py = origin.1 + pt.1 * scale_y;
                 cmds.push(mk(format!("G1 X{:.4} Y{:.4}", px, py)));
+            }
+
+            if p.closed {
+                let last = p.points[p.points.len() - 1];
+                let lx = origin.0 + last.0 * scale_x;
+                let ly = origin.1 + last.1 * scale_y;
+                let dx = (lx - fx).abs();
+                let dy = (ly - fy).abs();
+                if dx > 1e-6 || dy > 1e-6 {
+                    cmds.push(mk(format!("G1 X{:.4} Y{:.4}", fx, fy)));
+                }
             }
 
             cmds.push(mk("M5".to_string()));

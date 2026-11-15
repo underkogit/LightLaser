@@ -38,17 +38,10 @@ pub fn export_vector_layer(
     let s_max = 1000.0;
     let s_on = ((params.power_percent.clamp(0.0, 100.0) / 100.0) * s_max).round();
 
-    let laser_on = if params.dynamic_power {
-        format!("M4 S{:.0}", s_on)
-    } else {
-        format!("M3 S{:.0}", s_on)
-    };
-
     let mut cmds: Vec<GcodeCommand> = Vec::new();
 
     cmds.push(make_cmd("G21".to_string()));
     cmds.push(make_cmd("G90".to_string()));
-    cmds.push(make_cmd(laser_on));
     cmds.push(make_cmd(format!("G1 F{:.0}", params.feed_rate)));
 
     for pass in 0..params.passes.max(1) {
@@ -68,11 +61,20 @@ pub fn export_vector_layer(
             }
 
             let first = pts[0];
+
+            cmds.push(make_cmd("M5".to_string()));
             cmds.push(make_cmd(format!(
                 "G0 X{:.4} Y{:.4}",
                 origin.0 + first.x,
                 origin.1 + first.y
             )));
+
+            let laser_on_cmd = if params.dynamic_power {
+                format!("M4 S{:.0}", s_on)
+            } else {
+                format!("M3 S{:.0}", s_on)
+            };
+            cmds.push(make_cmd(laser_on_cmd));
 
             for p in pts.iter().skip(1) {
                 cmds.push(make_cmd(format!(

@@ -149,7 +149,9 @@ impl GrblConnection {
     pub fn send_and_wait_ok(&mut self, line: &str) -> Result<(), GrblError> {
         self.conn.write_line(line)?;
 
-        for _ in 0..50 {
+        let deadline = Instant::now() + Duration::from_secs(10);
+
+        while Instant::now() < deadline {
             match self.conn.read_line()? {
                 Some(resp) if resp == "ok" => return Ok(()),
                 Some(resp) if resp.starts_with("error:") => {

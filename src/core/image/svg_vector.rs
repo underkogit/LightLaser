@@ -107,12 +107,6 @@ pub fn svg_paths_to_gcode(
     let s_max = 1000.0;
     let s_on = ((params.power_percent.clamp(0.0, 100.0) / 100.0) * s_max).round();
 
-    let laser_on = if params.dynamic_power {
-        format!("M4 S{:.0}", s_on)
-    } else {
-        format!("M3 S{:.0}", s_on)
-    };
-
     let mut cmds = Vec::new();
     let mk = |raw: String| GcodeCommand {
         raw,
@@ -130,7 +124,6 @@ pub fn svg_paths_to_gcode(
 
     cmds.push(mk("G21".to_string()));
     cmds.push(mk("G90".to_string()));
-    cmds.push(mk(laser_on));
     cmds.push(mk(format!("G1 F{:.0}", params.feed_rate)));
 
     for pass in 0..params.passes.max(1) {
@@ -143,7 +136,7 @@ pub fn svg_paths_to_gcode(
                 continue;
             }
             let first = p.points[0];
-            cmds.push(mk(format!("M5")));
+            cmds.push(mk("M5".to_string()));
             cmds.push(mk(format!(
                 "G0 X{:.4} Y{:.4}",
                 origin.0 + first.x * scale,
