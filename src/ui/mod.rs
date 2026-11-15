@@ -290,6 +290,7 @@ impl eframe::App for LaserApp {
             .default_size(52.0)
             .min_size(52.0)
             .max_size(52.0)
+            .frame(egui::Frame::NONE)
             .show(ui, |ui| {
                 self.ui_tool_panel(ui);
             });
