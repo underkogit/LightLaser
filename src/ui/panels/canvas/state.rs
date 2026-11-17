@@ -67,6 +67,26 @@ impl Default for PreviewWindow {
     }
 }
 
+pub struct GcodeWindow {
+    pub open: bool,
+    pub text: String,
+    pub error: Option<String>,
+    pub pending: bool,
+    pub wrap: bool,
+}
+
+impl Default for GcodeWindow {
+    fn default() -> Self {
+        Self {
+            open: false,
+            text: String::new(),
+            error: None,
+            pending: false,
+            wrap: true,
+        }
+    }
+}
+
 pub struct SegmentCacheEntry {
     pub segments: Vec<(f64, f64, f64, f64)>,
 }
@@ -81,6 +101,7 @@ pub struct CanvasState {
     pub texture_cache: HashMap<String, egui::TextureHandle>,
     pub segment_cache: HashMap<String, SegmentCacheEntry>,
     pub preview_window: PreviewWindow,
+    pub gcode_window: GcodeWindow,
 }
 
 impl std::fmt::Debug for CanvasState {
@@ -93,6 +114,7 @@ impl std::fmt::Debug for CanvasState {
             .field("hovered_layer", &self.hovered_layer)
             .field("drag", &self.drag)
             .field("preview_open", &self.preview_window.open)
+            .field("gcode_open", &self.gcode_window.open)
             .finish()
     }
 }
@@ -109,6 +131,7 @@ impl Default for CanvasState {
             texture_cache: HashMap::new(),
             segment_cache: HashMap::new(),
             preview_window: PreviewWindow::default(),
+            gcode_window: GcodeWindow::default(),
         }
     }
 }

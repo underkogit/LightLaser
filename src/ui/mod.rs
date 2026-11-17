@@ -311,6 +311,7 @@ impl eframe::App for LaserApp {
         self.ui_connection_dialog(ui.ctx());
         self.ui_export_dialog(ui.ctx());
         self.ui_preview_window(ui.ctx());
+        self.ui_gcode_window(ui.ctx());
     }
 
     fn on_exit(&mut self) {

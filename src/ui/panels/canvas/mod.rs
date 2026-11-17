@@ -85,6 +85,10 @@ impl LaserApp {
                 self.open_preview();
                 ui.close();
             }
+            if ui.button("G-code").clicked() {
+                self.open_gcode_viewer();
+                ui.close();
+            }
             ui.separator();
             if ui
                 .add_enabled(has_selection, egui::Button::new("Copy"))
