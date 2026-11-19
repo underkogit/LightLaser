@@ -76,15 +76,23 @@ pub fn export_vector_layer(
             };
             cmds.push(make_cmd(laser_on_cmd));
 
+            let mut last = first;
             for p in pts.iter().skip(1) {
+                if (p.x - last.x).abs() < 1e-9 && (p.y - last.y).abs() < 1e-9 {
+                    continue;
+                }
                 cmds.push(make_cmd(format!(
                     "G1 X{:.4} Y{:.4}",
                     origin.0 + p.x,
                     origin.1 + p.y
                 )));
+                last = *p;
             }
 
-            if path.closed {
+            // A closed path already ends where it started, so the closing move would be a
+            // zero-length instruction.
+            if path.closed && ((last.x - first.x).abs() >= 1e-9 || (last.y - first.y).abs() >= 1e-9)
+            {
                 cmds.push(make_cmd(format!(
                     "G1 X{:.4} Y{:.4}",
                     origin.0 + first.x,

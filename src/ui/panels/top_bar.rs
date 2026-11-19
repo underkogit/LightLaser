@@ -57,10 +57,6 @@ impl LaserApp {
                     self.add_svg_interactive();
                     ui.close();
                 }
-                if ui.button("Add PCB SVG").clicked() {
-                    self.add_svg_pcb_interactive();
-                    ui.close();
-                }
                 if ui.button(t!("ui.menu.add_gcode")).clicked() {
                     self.add_gcode_interactive();
                     ui.close();
@@ -201,9 +197,9 @@ impl LaserApp {
     }
 
     fn ui_top_status(&mut self, ui: &mut egui::Ui) {
-        let (state_label, mpos) = match &self.grbl_status {
-            Some(s) => (s.state.label(), s.mpos),
-            None => (GrblState::Unknown.label(), None),
+        let state_label = match &self.grbl_status {
+            Some(s) => s.state.label(),
+            None => GrblState::Unknown.label(),
         };
 
         let state_color = match self.grbl_status.as_ref().map(|s| s.state) {
@@ -213,12 +209,7 @@ impl LaserApp {
             _ => egui::Color32::GRAY,
         };
 
+        // The machine position lives in the bottom bar.
         ui.colored_label(state_color, state_label);
-        ui.label("|");
-        if let Some((x, y, z)) = mpos {
-            ui.label(format!("X:{:.2} Y:{:.2} Z:{:.2}", x, y, z));
-        } else {
-            ui.label("X:— Y:— Z:—");
-        }
     }
 }

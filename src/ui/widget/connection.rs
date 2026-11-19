@@ -66,7 +66,7 @@ impl LaserApp {
                 ui.add_space(16.0);
                 ui.separator();
 
-                ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let can_connect = !self.project.machine.port.is_empty();
                     if ui
                         .add_enabled(

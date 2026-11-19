@@ -17,6 +17,7 @@ use crate::ui::{
 pub mod app_config;
 mod canvas_transform;
 mod colors;
+mod fonts;
 mod history;
 mod line_raster;
 mod panels;
@@ -26,6 +27,7 @@ mod tools_state;
 mod widget;
 
 pub(crate) use canvas_transform::CanvasTransform;
+pub(crate) use fonts::apply_fonts;
 
 #[derive(Debug, Default)]
 pub struct UiState {
@@ -59,6 +61,7 @@ pub struct LaserApp {
     pub(crate) settings_open: bool,
     pub(crate) settings_tab: SettingsTab,
     pub(crate) console_open: bool,
+    pub(crate) window_centered: bool,
 
     pub(crate) clipboard: Option<Vec<crate::core::layer::Layer>>,
 }
@@ -96,6 +99,7 @@ impl LaserApp {
             settings_open: false,
             settings_tab: SettingsTab::default(),
             console_open: false,
+            window_centered: false,
             clipboard: None,
         }
     }
@@ -173,6 +177,15 @@ impl eframe::App for LaserApp {
         // Applied every frame; egui only reacts when the value actually changes.
         ui.ctx()
             .set_zoom_factor(self.app_config.ui_scale.clamp(0.5, 2.0));
+
+        // Centre the window once the platform has reported the monitor size. Until then
+        // `center_on_screen` returns `None`, so this simply retries on the next frame.
+        if !self.window_centered {
+            if let Some(command) = egui::ViewportCommand::center_on_screen(ui.ctx()) {
+                ui.ctx().send_viewport_cmd(command);
+                self.window_centered = true;
+            }
+        }
 
         let screen_rect = ui.ctx().viewport_rect();
         self.app_config.window_width = screen_rect.width();
@@ -307,14 +320,13 @@ impl eframe::App for LaserApp {
             .default_size(52.0)
             .min_size(52.0)
             .max_size(52.0)
-            .frame(egui::Frame::NONE)
             .show(ui, |ui| {
                 self.ui_tool_panel(ui);
             });
 
         egui::Panel::right("right_panel")
             .resizable(true)
-            .default_size(400.0)
+            .default_size(500.0)
             .min_size(300.0)
             .max_size(600.0)
             .show(ui, |ui| {

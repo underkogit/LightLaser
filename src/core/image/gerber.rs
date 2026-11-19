@@ -47,6 +47,45 @@ const SIMPLIFY_EPSILON: f64 = 0.01;
 /// Reads a Gerber file and returns the outline of its copper as line segments in
 /// millimetres.
 pub fn parse_gerber_segments(path: &Path) -> Result<Vec<Segment>, String> {
+    let walk = read_document(path)?;
+
+    // Turn every primitive into a filled area, then merge them all. Overlapping strokes and
+    // pads stop contributing their own edges and only the outer boundary survives.
+    let mut paths = ClipPaths::new(Vec::new());
+    for primitive in &walk.primitives {
+        paths.append(primitive_to_paths(primitive));
+    }
+
+    let merged = union_paths(paths);
+
+    // A union that fails or collapses must not cost the layer its geometry.
+    let segments = if merged.is_empty() {
+        log::warn!("gerber: union produced nothing, keeping the unmerged outlines");
+        let mut unmerged = ClipPaths::new(Vec::new());
+        for primitive in &walk.primitives {
+            unmerged.append(primitive_to_paths(primitive));
+        }
+        paths_to_segments(&unmerged)
+    } else {
+        paths_to_segments(&merged)
+    };
+
+    log::info!(
+        "gerber: {} primitives -> {} contours -> {} segments",
+        walk.primitives.len(),
+        merged.len(),
+        segments.len()
+    );
+
+    if segments.is_empty() {
+        return Err("no geometry found in gerber".to_string());
+    }
+
+    Ok(segments)
+}
+
+/// Parses a file into primitives, scaled to millimetres.
+fn read_document(path: &Path) -> Result<Walk, String> {
     let file = File::open(path).map_err(|e| format!("open {}: {}", path.display(), e))?;
     let doc = gerber_parser::parse(BufReader::new(file))
         .map_err(|(_, e)| format!("gerber: {}", e))?;
@@ -68,21 +107,7 @@ pub fn parse_gerber_segments(path: &Path) -> Result<Vec<Segment>, String> {
         }
     }
 
-    // Turn every primitive into a filled area, then merge them all. Overlapping strokes and
-    // pads stop contributing their own edges and only the outer boundary survives.
-    let mut paths = ClipPaths::new(Vec::new());
-    for primitive in &walk.primitives {
-        paths.append(primitive_to_paths(primitive));
-    }
-
-    let merged = union_paths(paths);
-    let segments = paths_to_segments(&merged);
-
-    if segments.is_empty() {
-        return Err("no geometry found in gerber".to_string());
-    }
-
-    Ok(segments)
+    Ok(walk)
 }
 
 /// A Gerber primitive, kept in its own terms until it is turned into an area.
@@ -479,8 +504,39 @@ fn stroke_to_paths(points: &[(f64, f64)], width: f64) -> ClipPaths {
 
 fn union_paths(paths: ClipPaths) -> ClipPaths {
     // NonZero rather than EvenOdd: overlapping copper has to merge, not cancel out.
-    clipper2::union::<Milli>(paths, ClipPaths::new(Vec::new()), FillRule::NonZero)
-        .unwrap_or_else(|_| ClipPaths::new(Vec::new()))
+    clipper2::union::<Milli>(
+        orient_positive(paths),
+        ClipPaths::new(Vec::new()),
+        FillRule::NonZero,
+    )
+    .unwrap_or_else(|_| ClipPaths::new(Vec::new()))
+}
+
+/// Rewinds every contour so they all run the same way round.
+///
+/// The NonZero fill rule works on winding numbers, so a contour that runs opposite to the
+/// one it overlaps cancels it out instead of merging with it. Gerber regions and macro
+/// outlines inherit whatever direction the source file happened to use, and clipper2's own
+/// offsetting is not guaranteed to match either, so the winding is normalised here rather
+/// than trusted.
+fn orient_positive(paths: ClipPaths) -> ClipPaths {
+    let mut out: Vec<ClipPath> = Vec::with_capacity(paths.len());
+
+    for path in paths.iter() {
+        if path.len() < 3 {
+            continue;
+        }
+
+        let points: Vec<(f64, f64)> = path.iter().map(|point| (point.x(), point.y())).collect();
+
+        if path.signed_area() < 0.0 {
+            out.push(points.into_iter().rev().collect::<Vec<_>>().into());
+        } else {
+            out.push(points.into());
+        }
+    }
+
+    out.into()
 }
 
 /// Emits every contour of the merged areas as a closed run of line segments.

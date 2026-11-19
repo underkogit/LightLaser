@@ -261,6 +261,35 @@ pub fn render_overlays(painter: &Painter, transform: &CanvasTransform, app: &Las
     if let Some(bounds) = selection_bounds(app) {
         draw_rect_dimensions(painter, transform, bounds);
     }
+
+    draw_snap_indicator(painter, transform, app);
+}
+
+/// Marks the grid intersection nearest to the pointer.
+///
+/// Shown whenever the canvas is hovered, whether or not the grid itself is drawn, so the
+/// snap position is always visible.
+fn draw_snap_indicator(painter: &Painter, transform: &CanvasTransform, app: &LaserApp) {
+    let step = app.app_config.grid_step_mm;
+    if step <= 0.0 {
+        return;
+    }
+
+    let Some(pointer) = painter.ctx().pointer_hover_pos() else {
+        return;
+    };
+    if !transform.rect.contains(pointer) {
+        return;
+    }
+
+    let (world_x, world_y) = transform.to_world(pointer);
+    let snapped = transform.to_screen(
+        (world_x / step).round() * step,
+        (world_y / step).round() * step,
+    );
+
+    painter.circle_stroke(snapped, 6.0, Stroke::new(1.0, colors::SNAP_POINT));
+    painter.circle_filled(snapped, 2.0, colors::SNAP_POINT);
 }
 
 #[inline]

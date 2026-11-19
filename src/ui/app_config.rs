@@ -46,6 +46,10 @@ pub struct AppConfig {
 
     #[serde(default = "default_console_font_size")]
     pub console_font_size: f32,
+
+    /// Path to a font file used for the whole interface; `None` keeps the built-in font.
+    #[serde(default)]
+    pub ui_font: Option<String>,
 }
 
 impl AppConfig {
@@ -90,6 +94,7 @@ impl Default for AppConfig {
             show_work_area: true,
             ui_scale: default_ui_scale(),
             console_font_size: default_console_font_size(),
+            ui_font: None,
         }
     }
 }
@@ -99,7 +104,7 @@ fn default_width() -> f32 {
 }
 
 fn default_height() -> f32 {
-    700.0
+    720.0
 }
 
 fn default_locale() -> String {

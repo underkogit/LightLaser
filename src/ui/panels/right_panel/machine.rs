@@ -3,6 +3,8 @@ use rust_i18n::t;
 use crate::comm::{StreamerCommand, StreamerState};
 use crate::ui::LaserApp;
 
+use super::jog_crosshair::CROSSHAIR_WIDTH;
+
 impl LaserApp {
     pub(crate) fn ui_machine_controls(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
@@ -10,6 +12,30 @@ impl LaserApp {
         ui.label(egui::RichText::new("Machine Control").strong());
         ui.add_space(4.0);
 
+        // Actions fill the panel; the jog crosshair is pinned to the right at a fixed width.
+        //
+        // `Ui::columns` is deliberately not used here. It builds its columns with
+        // `Layout::top_down_justified`, which stretches every widget to the full column
+        // width - buttons become full-width bars and the fields run into each other. The
+        // explicit allocation below keeps both sides at their natural size.
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(CROSSHAIR_WIDTH, 0.0),
+                egui::Layout::top_down(egui::Align::Center),
+                |ui| {
+                    self.ui_jog_crosshair(ui);
+                },
+            );
+
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                self.ui_machine_actions(ui);
+            });
+        });
+
+        ui.add_space(4.0);
+    }
+
+    fn ui_machine_actions(&mut self, ui: &mut egui::Ui) {
         let connected = self.grbl_status.is_some();
         let is_running = self.streamer_state == StreamerState::Running;
         let is_paused = self.streamer_state == StreamerState::Paused;
@@ -26,6 +52,7 @@ impl LaserApp {
                         t!("ui.button.start")
                     )),
                 )
+                .on_hover_text(t!("ui.tip.job_start").to_string())
                 .clicked()
             {
                 self.start_job();
@@ -38,6 +65,7 @@ impl LaserApp {
                         egui_phosphor::regular::PAUSE,
                         t!("ui.button.pause")
                     ))
+                    .on_hover_text(t!("ui.tip.job_pause").to_string())
                     .clicked()
                 {
                     self.streamer.send(StreamerCommand::Pause);
@@ -50,6 +78,7 @@ impl LaserApp {
                         egui_phosphor::regular::PLAY,
                         t!("ui.button.resume")
                     ))
+                    .on_hover_text(t!("ui.tip.job_resume").to_string())
                     .clicked()
                 {
                     self.streamer.send(StreamerCommand::Resume);
@@ -66,6 +95,7 @@ impl LaserApp {
                         t!("ui.button.stop")
                     )),
                 )
+                .on_hover_text(t!("ui.tip.job_stop").to_string())
                 .clicked()
             {
                 self.streamer.send(StreamerCommand::Stop);
@@ -92,7 +122,7 @@ impl LaserApp {
                     connected,
                     egui::Button::new(format!("{}", egui_phosphor::regular::HOUSE)),
                 )
-                .on_hover_text(t!("ui.button.home"))
+                .on_hover_text(t!("ui.tip.home").to_string())
                 .clicked()
             {
                 self.streamer.send(StreamerCommand::Home);
@@ -103,7 +133,7 @@ impl LaserApp {
                     connected,
                     egui::Button::new(format!("{}", egui_phosphor::regular::LOCK_OPEN)),
                 )
-                .on_hover_text(t!("ui.button.unlock"))
+                .on_hover_text(t!("ui.tip.unlock").to_string())
                 .clicked()
             {
                 self.streamer.send(StreamerCommand::Unlock);
@@ -112,92 +142,41 @@ impl LaserApp {
 
         ui.add_space(4.0);
 
-        ui.label("Jog");
+        // Step and feed rate sit side by side to keep the panel short. The widths are kept
+        // small so the pair still fits when the right panel is dragged to its minimum.
         ui.horizontal(|ui| {
-            let step = self.project.machine.jog_step;
-            let feed = self.project.machine.jog_feed;
-
-            if ui
-                .add_enabled(
-                    connected,
-                    egui::Button::new(format!("{}", egui_phosphor::regular::ARROW_LEFT)),
+            ui.vertical(|ui| {
+                ui.label("Step");
+                ui.add_sized(
+                    [60.0, ui.spacing().interact_size.y],
+                    egui::DragValue::new(&mut self.project.machine.jog_step)
+                        .speed(0.1)
+                        .range(0.1..=100.0)
+                        .suffix(" mm"),
                 )
-                .clicked()
-            {
-                self.streamer.send(StreamerCommand::Jog {
-                    dx: -step,
-                    dy: 0.0,
-                    feed,
-                });
-            }
+                .on_hover_text(t!("ui.tip.jog_step").to_string());
+            });
 
-            if ui
-                .add_enabled(
-                    connected,
-                    egui::Button::new(format!("{}", egui_phosphor::regular::ARROW_UP)),
+            ui.vertical(|ui| {
+                ui.label("Feed rate");
+                ui.add_sized(
+                    [80.0, ui.spacing().interact_size.y],
+                    egui::DragValue::new(&mut self.project.machine.jog_feed)
+                        .speed(10.0)
+                        .range(1.0..=20000.0)
+                        .suffix(" mm/min"),
                 )
-                .clicked()
-            {
-                self.streamer.send(StreamerCommand::Jog {
-                    dx: 0.0,
-                    dy: step,
-                    feed,
-                });
-            }
-
-            if ui
-                .add_enabled(
-                    connected,
-                    egui::Button::new(format!("{}", egui_phosphor::regular::ARROW_DOWN)),
-                )
-                .clicked()
-            {
-                self.streamer.send(StreamerCommand::Jog {
-                    dx: 0.0,
-                    dy: -step,
-                    feed,
-                });
-            }
-
-            if ui
-                .add_enabled(
-                    connected,
-                    egui::Button::new(format!("{}", egui_phosphor::regular::ARROW_RIGHT)),
-                )
-                .clicked()
-            {
-                self.streamer.send(StreamerCommand::Jog {
-                    dx: step,
-                    dy: 0.0,
-                    feed,
-                });
-            }
+                .on_hover_text(t!("ui.tip.jog_feed").to_string());
+            });
         });
 
-        ui.label("Step");
-        ui.horizontal(|ui| {
-            ui.add_sized(
-                [80.0, ui.spacing().interact_size.y],
-                egui::DragValue::new(&mut self.project.machine.jog_step)
-                    .speed(0.1)
-                    .range(0.1..=100.0)
-                    .suffix(" mm"),
-            )
-            .on_hover_text(t!("ui.tooltip.jog_step"));
-        });
-
-        ui.label("Feed rate");
-        ui.horizontal(|ui| {
-            ui.add_sized(
-                [100.0, ui.spacing().interact_size.y],
-                egui::DragValue::new(&mut self.project.machine.jog_feed)
-                    .speed(10.0)
-                    .range(1.0..=20000.0)
-                    .suffix(" mm/min"),
-            )
-            .on_hover_text("Jog feed rate");
-        });
-
-        ui.add_space(4.0);
+        ui.label("Passes");
+        ui.add_sized(
+            [60.0, ui.spacing().interact_size.y],
+            egui::DragValue::new(&mut self.project.machine.passes)
+                .speed(0.2)
+                .range(1..=100),
+        )
+        .on_hover_text(t!("ui.tip.machine_passes").to_string());
     }
 }

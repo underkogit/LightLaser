@@ -54,7 +54,24 @@ impl BezierSegment {
         }
     }
 
+    /// True when the control points sit on the endpoints, i.e. the segment is a straight
+    /// line. Subdividing such a segment only adds points that lie on the line itself.
+    fn is_straight(&self) -> bool {
+        const EPS: f64 = 1e-9;
+        (self.c1.x - self.p0.x).abs() <= EPS
+            && (self.c1.y - self.p0.y).abs() <= EPS
+            && (self.c2.x - self.p1.x).abs() <= EPS
+            && (self.c2.y - self.p1.y).abs() <= EPS
+    }
+
     pub fn flatten(&self, tolerance: f64, out: &mut Vec<CurvePoint>) {
+        // A straight segment is already exact: emitting its endpoint is the whole job.
+        // Without this a 60 mm line is chopped into ~50 collinear moves.
+        if self.is_straight() {
+            out.push(self.p1);
+            return;
+        }
+
         let tol = tolerance.max(0.001);
         let rough = (self.p0.x - self.p1.x).abs()
             + (self.p0.y - self.p1.y).abs()
@@ -65,7 +82,9 @@ impl BezierSegment {
 
         let steps = ((rough / tol).sqrt().ceil() as usize).clamp(4, 256);
 
-        for i in 0..=steps {
+        // Start at 1: the caller already emitted this segment's start point, so emitting it
+        // again would produce a zero-length move.
+        for i in 1..=steps {
             let t = i as f64 / steps as f64;
             out.push(self.eval(t));
         }

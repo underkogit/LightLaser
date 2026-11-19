@@ -35,7 +35,10 @@ impl LaserApp {
                 ui.add_space(16.0);
                 ui.separator();
 
-                ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                // `Align::Center` also centres the text inside each button; `Align::Min`
+                // would top-align it, because egui reuses the layout's cross alignment for
+                // the label.
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui
                         .add(egui::Button::new(t!("ui.button.export").to_string()))
                         .clicked()

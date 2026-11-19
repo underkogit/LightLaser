@@ -114,10 +114,6 @@ impl LaserApp {
         self.center_view();
     }
 
-    pub(crate) fn add_svg_pcb_interactive(&mut self) {
-        self.add_svg_interactive();
-    }
-
     pub(crate) fn add_gcode_interactive(&mut self) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("G-code", &["nc", "gcode", "txt"])

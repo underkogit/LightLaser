@@ -2,6 +2,7 @@ use rust_i18n::t;
 
 use crate::ui::LaserApp;
 use crate::ui::app_config::AppTheme;
+use crate::ui::apply_fonts;
 
 /// Which page of the settings window is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -9,6 +10,17 @@ pub(crate) enum SettingsTab {
     #[default]
     General,
     Design,
+}
+
+/// Locales the UI ships with, as `(code, native name)`.
+const LOCALES: &[(&str, &str)] = &[("en", "English"), ("ru", "Русский")];
+
+fn locale_name(code: &str) -> String {
+    LOCALES
+        .iter()
+        .find(|(candidate, _)| *candidate == code)
+        .map(|(_, name)| (*name).to_string())
+        .unwrap_or_else(|| code.to_string())
 }
 
 impl LaserApp {
@@ -51,6 +63,15 @@ impl LaserApp {
                     SettingsTab::General => self.ui_settings_general(ui),
                     SettingsTab::Design => self.ui_settings_design(ui),
                 }
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button(t!("ui.settings.save").to_string()).clicked() {
+                        self.app_config.save();
+                    }
+                    ui.label(egui::RichText::new(t!("ui.settings.save_hint").to_string()).weak());
+                });
             });
 
         // Persist as soon as the window is dismissed, so a crash cannot lose the settings.
@@ -61,6 +82,8 @@ impl LaserApp {
     }
 
     fn ui_settings_general(&mut self, ui: &mut egui::Ui) {
+        let locale_before = self.app_config.app_locale.clone();
+
         ui.add_space(8.0);
         ui.label(egui::RichText::new(t!("ui.settings.general").to_string()).strong());
         ui.add_space(8.0);
@@ -69,6 +92,20 @@ impl LaserApp {
             .num_columns(2)
             .spacing([16.0, 10.0])
             .show(ui, |ui| {
+                ui.label(t!("ui.settings.language").to_string());
+                egui::ComboBox::from_id_salt("settings_language")
+                    .selected_text(locale_name(&self.app_config.app_locale))
+                    .show_ui(ui, |ui| {
+                        for (code, name) in LOCALES {
+                            ui.selectable_value(
+                                &mut self.app_config.app_locale,
+                                (*code).to_string(),
+                                *name,
+                            );
+                        }
+                    });
+                ui.end_row();
+
                 ui.label(t!("ui.settings.ui_scale").to_string());
                 ui.add(
                     egui::Slider::new(&mut self.app_config.ui_scale, 0.5..=2.0)
@@ -86,6 +123,12 @@ impl LaserApp {
                 );
                 ui.end_row();
             });
+
+        // Switching locale only takes effect from the next frame, so ask for one.
+        if self.app_config.app_locale != locale_before {
+            rust_i18n::set_locale(&self.app_config.app_locale);
+            ui.ctx().request_repaint();
+        }
 
         ui.add_space(12.0);
         if ui.button(t!("ui.settings.reset").to_string()).clicked() {
@@ -136,6 +179,36 @@ impl LaserApp {
                         .step_by(0.5)
                         .suffix(" mm"),
                 );
+                ui.end_row();
+
+                ui.label(t!("ui.settings.font").to_string());
+                ui.horizontal(|ui| {
+                    let font_name = self
+                        .app_config
+                        .ui_font
+                        .as_deref()
+                        .and_then(|path| std::path::Path::new(path).file_name())
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("Default")
+                        .to_string();
+
+                    ui.label(font_name);
+
+                    if ui.button(t!("ui.settings.font_choose").to_string()).clicked() {
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("Fonts", &["ttf", "otf", "ttc"])
+                            .pick_file()
+                        {
+                            self.app_config.ui_font = Some(path.to_string_lossy().to_string());
+                            apply_fonts(ui.ctx(), self.app_config.ui_font.as_deref());
+                        }
+                    }
+
+                    if ui.button(t!("ui.settings.font_reset").to_string()).clicked() {
+                        self.app_config.ui_font = None;
+                        apply_fonts(ui.ctx(), None);
+                    }
+                });
                 ui.end_row();
             });
 

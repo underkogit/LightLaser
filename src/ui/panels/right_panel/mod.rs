@@ -1,4 +1,4 @@
-mod connection;
+mod jog_crosshair;
 mod layers;
 mod machine;
 mod properties;
@@ -12,7 +12,6 @@ use crate::ui::LaserApp;
 pub enum RightPanelTab {
     #[default]
     Layers,
-    Connection,
     Properties,
 }
 
@@ -44,11 +43,6 @@ impl LaserApp {
                 RightPanelTab::Layers,
                 t!("ui.label.layers").to_string(),
             );
-            ui.selectable_value(
-                &mut active_tab,
-                RightPanelTab::Connection,
-                t!("ui.label.connection.title").to_string(),
-            );
             ui.selectable_value(&mut active_tab, RightPanelTab::Properties, "Properties");
         });
         ui.separator();
@@ -61,15 +55,10 @@ impl LaserApp {
                 RightPanelTab::Layers => {
                     self.ui_layer_list(ui);
                 }
-                RightPanelTab::Connection => {
-                    self.ui_connection_params(ui);
-                }
                 RightPanelTab::Properties => {
                     let selected = self.ui_state.selection.layer;
                     if let Some(idx) = selected {
                         if idx < self.project.layers.len() {
-                            self.ui_selection_actions(ui);
-                            ui.separator();
                             self.ui_layer_params(ui, idx);
                         } else {
                             self.ui_state.selection.clear();

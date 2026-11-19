@@ -42,72 +42,33 @@ impl LaserApp {
         lines.push("G90 ; absolute".to_string());
         lines.push("G17 ; XY plane".to_string());
 
-        for (i, layer) in self.project.layers.iter().enumerate() {
-            if !layer.is_enabled {
-                continue;
+        // `machine.passes` repeats the whole job. Each layer's own pass count still applies
+        // within a single job pass.
+        for pass in 0..self.project.machine.passes.max(1) {
+            if pass > 0 {
+                lines.push(format!("; --- job pass {} ---", pass + 1));
             }
 
-            lines.push(format!("; --- layer #{}: {} ---", i + 1, layer.name));
-
-            let origin = layer_origin(layer);
-            let width_mm = layer
-                .bounds()
-                .map(|b| (b.2 - b.0).max(1.0))
-                .unwrap_or(100.0);
-
-            let layer_cmds: Vec<GcodeCommand> = match &layer.source {
-                LayerSource::Image { path } => {
-                    let loaded = load_image(std::path::Path::new(path))
-                        .map_err(|e| format!("image '{}': {}", path, e))?;
-
-                    let raster = rasterize(
-                        &loaded.dynamic,
-                        RasterizeOptions {
-                            pixels_per_mm: layer.params.pixels_per_mm,
-                            threshold: layer.params.threshold,
-                            invert: layer.params.invert,
-                        },
-                        Some(width_mm),
-                    );
-
-                    engrave_layer(&raster, &layer.params, origin)
-                        .map_err(|e| format!("engrave '{}': {}", path, e))?
+            for (i, layer) in self.project.layers.iter().enumerate() {
+                if !layer.is_enabled {
+                    continue;
                 }
-                LayerSource::Svg { path } => {
-                    if layer.params.engrave_mode == EngraveMode::Lines {
-                        let target_px = (layer.params.pixels_per_mm * width_mm)
-                            .round()
-                            .clamp(512.0, 4096.0) as u32;
 
-                        let img = svg_trace::rasterize_svg_to_image(
-                            std::path::Path::new(path),
-                            target_px,
-                        )
-                        .map_err(|e| format!("svg '{}': {}", path, e))?;
+                lines.push(format!("; --- layer #{}: {} ---", i + 1, layer.name));
 
-                        let paths = svg_trace::trace_image_to_paths(&img, 128);
+                let origin = layer_origin(layer);
+                let width_mm = layer
+                    .bounds()
+                    .map(|b| (b.2 - b.0).max(1.0))
+                    .unwrap_or(100.0);
 
-                        let scale_x = width_mm / target_px as f64;
-                        let scale_y = (width_mm * (img.height() as f64 / img.width() as f64))
-                            / img.height() as f64;
-
-                        svg_trace::traced_paths_to_gcode(
-                            &paths,
-                            &layer.params,
-                            origin,
-                            scale_x,
-                            scale_y,
-                        )
-                    } else {
-                        let target_px = (layer.params.pixels_per_mm * width_mm)
-                            .round()
-                            .clamp(64.0, 4096.0) as u32;
-
-                        let svg = rasterize_svg(std::path::Path::new(path), target_px)
-                            .map_err(|e| format!("svg '{}': {}", path, e))?;
+                let layer_cmds: Vec<GcodeCommand> = match &layer.source {
+                    LayerSource::Image { path } => {
+                        let loaded = load_image(std::path::Path::new(path))
+                            .map_err(|e| format!("image '{}': {}", path, e))?;
 
                         let raster = rasterize(
-                            &svg.image,
+                            &loaded.dynamic,
                             RasterizeOptions {
                                 pixels_per_mm: layer.params.pixels_per_mm,
                                 threshold: layer.params.threshold,
@@ -119,18 +80,65 @@ impl LaserApp {
                         engrave_layer(&raster, &layer.params, origin)
                             .map_err(|e| format!("engrave '{}': {}", path, e))?
                     }
+                    LayerSource::Svg { path } => {
+                        if layer.params.engrave_mode == EngraveMode::Lines {
+                            let target_px = (layer.params.pixels_per_mm * width_mm)
+                                .round()
+                                .clamp(512.0, 4096.0) as u32;
+
+                            let img = svg_trace::rasterize_svg_to_image(
+                                std::path::Path::new(path),
+                                target_px,
+                            )
+                            .map_err(|e| format!("svg '{}': {}", path, e))?;
+
+                            let paths = svg_trace::trace_image_to_paths(&img, 128);
+
+                            let scale_x = width_mm / target_px as f64;
+                            let scale_y = (width_mm * (img.height() as f64 / img.width() as f64))
+                                / img.height() as f64;
+
+                            svg_trace::traced_paths_to_gcode(
+                                &paths,
+                                &layer.params,
+                                origin,
+                                scale_x,
+                                scale_y,
+                            )
+                        } else {
+                            let target_px = (layer.params.pixels_per_mm * width_mm)
+                                .round()
+                                .clamp(64.0, 4096.0) as u32;
+
+                            let svg = rasterize_svg(std::path::Path::new(path), target_px)
+                                .map_err(|e| format!("svg '{}': {}", path, e))?;
+
+                            let raster = rasterize(
+                                &svg.image,
+                                RasterizeOptions {
+                                    pixels_per_mm: layer.params.pixels_per_mm,
+                                    threshold: layer.params.threshold,
+                                    invert: layer.params.invert,
+                                },
+                                Some(width_mm),
+                            );
+
+                            engrave_layer(&raster, &layer.params, origin)
+                                .map_err(|e| format!("engrave '{}': {}", path, e))?
+                        }
+                    }
+                    LayerSource::Gcode { path } => build_gcode_layer(path, layer)?,
+                    LayerSource::Gerber { path } => build_gerber_layer(path, layer)?,
+                    LayerSource::Vector => export_vector_layer(layer, &layer.params, origin)
+                        .map_err(|e| format!("vector '{}': {}", layer.name, e))?,
+                };
+
+                for cmd in layer_cmds {
+                    lines.push(cmd.raw);
                 }
-                LayerSource::Gcode { path } => build_gcode_layer(path, layer)?,
-                LayerSource::Gerber { path } => build_gerber_layer(path, layer)?,
-                LayerSource::Vector => export_vector_layer(layer, &layer.params, origin)
-                    .map_err(|e| format!("vector '{}': {}", layer.name, e))?,
-            };
 
-            for cmd in layer_cmds {
-                lines.push(cmd.raw);
+                lines.push("M5".to_string());
             }
-
-            lines.push("M5".to_string());
         }
 
         lines.push("G0 X0 Y0 ; return home".to_string());

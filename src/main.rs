@@ -62,8 +62,7 @@ fn main() {
         viewport: egui::ViewportBuilder::default()
             .with_title(format!("LightLaser - v{VERSION}"))
             .with_inner_size([1200.0, 720.0])
-            .with_resizable(true)
-            .with_position([100.0, 100.0]),
+            .with_resizable(true),
         ..eframe::NativeOptions::default()
     };
 
@@ -73,9 +72,7 @@ fn main() {
         Box::new(move |cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
 
-            let mut fonts = egui::FontDefinitions::default();
-            egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
-            cc.egui_ctx.set_fonts(fonts);
+            crate::ui::apply_fonts(&cc.egui_ctx, app_config.ui_font.as_deref());
 
             cc.egui_ctx.all_styles_mut(|style| {
                 style.spacing.item_spacing = egui::vec2(8.0, 2.0);
