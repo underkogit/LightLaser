@@ -3,7 +3,7 @@
 ![LightLaser](images/LightLaser_aQjJS8K7E0.png)
 ![LightLaser](images/LightLaser_kVOATA2Uyo.png)
 
-LightLaser is a desktop laser engraving and cutting control application written in Rust. It provides a graphical interface for composing jobs from images, SVG files, G-code files, and vector drawing tools, then streaming the resulting G-code to a GRBL-based laser controller over a serial port.
+LightLaser is a desktop laser engraving and cutting control application written in Rust. It provides a graphical interface for composing jobs from images, SVG files, G-code files, Gerber files, and vector drawing tools, then streaming the resulting G-code to a GRBL-based laser controller over a serial port.
 
 ## Features
 
@@ -13,16 +13,19 @@ LightLaser is a desktop laser engraving and cutting control application written 
 - Job controls: start, pause, resume, stop, home, unlock.
 - Jog controls with configurable step and feed rate.
 - Layer system:
-    - Image layers with raster engraving parameters (power, feed rate, passes, pixels per millimeter, threshold, dither, invert).
+    - Image layers with raster engraving parameters (power, feed rate, passes, pixels per millimetre, threshold, dither, invert).
+    - SVG layers, engraved either as a raster or traced into lines.
+    - G-code and Gerber layers as imported sources.
     - Vector layers drawn with line, curve, rectangle, and circle tools.
-    - SVG and G-code layers as imported sources.
-- Layer visibility, enable/disable, reordering, renaming, color editing, duplication, and deletion.
+- Layer visibility, enable/disable, reordering, renaming, colour editing, duplication, and deletion.
 - Project save/load in TOML format with version checking.
 - G-code export of the full job to a `.nc` file.
 - Undo/redo history for project edits.
-- Configurable work area, grid, axes, snap-to-grid, and theme.
+- Configurable work area, grid, axes, and grid step.
+- Settings window with interface scale, console font size, a custom font file, and the UI language.
+- Grid snapping is always enabled, at a fixed 1 mm step.
 - Internationalization with English and Russian locales.
-- Logging to console and an in-app log panel.
+- Logging to the console and to an in-app console window.
 
 ## Requirements
 
@@ -45,13 +48,15 @@ cargo run --release
 
 ## Usage Overview
 
-1. Open the application. The main window contains a tool panel on the left, the canvas in the center, the layer/parameters panel on the right, and the log panel at the bottom.
+1. Open the application. The main window contains a tool panel on the left, the canvas in the center, the layer/parameters panel on the right, and a status strip at the bottom. The log is shown in a separate console window (`View > Console`).
 2. Add content:
-    - `File > Add image` to create image layers.
-    - `File > Add SVG` to import SVG files.
-    - `File > Add G-code` to import existing G-code.
+    - `File > Import > Add image` to create image layers.
+    - `File > Import > Add SVG` to import SVG files.
+    - `File > Import > Add G-code` to import existing G-code.
+    - `File > Import > Add Gerber` to import a Gerber file.
     - Use the drawing tools to create vector shapes directly on the canvas.
-3. Select a layer in the right panel and adjust its parameters (power, feed rate, passes, and image-specific options where applicable).
+    - Files can also be dragged onto the window; the extension selects the importer.
+3. Select a layer in the right panel and adjust its parameters (power, feed rate, passes, and image-specific options where applicable). Hovering a control shows a tooltip describing what it does.
 4. Toggle layer visibility and enabled state as needed. Only enabled layers are included in jobs and exports.
 5. Connect to the machine via the connection dialog, selecting the serial port and baud rate.
 6. Use `Start` to stream the job to the controller, or `File > Export G-code` to save it to a file.
@@ -62,12 +67,12 @@ cargo run --release
 Projects are stored as TOML and include:
 
 - Project version and name.
-- Machine configuration (port, baud rate, work area, jog settings, laser mode, soft limits, homing).
+- Machine configuration (port, baud rate, work area, jog step, jog feed, and the number of times the whole job is run).
 - Layers with source type, color, visibility, enabled state, parameters, bounds, vector shapes, and offset.
 
 ## Configuration
 
-Application settings are stored in `config/app_config.toml` next to the executable. Settings include window size, locale, theme, grid step, and visibility toggles for grid, axes, and work area.
+Application settings are stored in `config/app_config.toml` next to the executable, and are written when the settings window is closed and when the application exits. Settings include window size, locale, theme, interface scale, console font size, custom font file, grid step, and visibility toggles for grid, axes, and work area.
 
 ## Locales
 
@@ -82,18 +87,20 @@ Locale files are TOML dictionaries located in `locales/`. The following locales 
 - `Ctrl+Shift+Z` or `Ctrl+Y` — redo
 - `Ctrl+S` — save project
 - `Ctrl+Shift+S` — save project as
-- `Ctrl+O` — open project
-- `Ctrl+N` — new project
-- `Ctrl+E` — export G-code
 - `Ctrl+D` — duplicate selection
 - `Delete` / `Backspace` — delete selection
 - `Escape` — cancel current tool action
 - `Enter` — finish current tool action
 
+## Known Limitations
+
+- The theme selector in the settings window is stored in the configuration file but is not applied to the interface; the application uses the default egui visuals.
+- The machine configuration stores a serial port and baud rate, but not laser mode, soft limits, or homing settings.
+
 ## Project Structure
 
 - `src/comm` — serial connection, GRBL protocol, status parsing, and job streamer.
-- `src/core` — geometry, bounding boxes, project and layer model, image rasterization and engraving, G-code parsing and generation, vector paths, and drawing tools.
+- `src/core` — geometry, bounding boxes, project and layer model, image rasterization and engraving, Gerber import, G-code parsing and generation, vector paths, and drawing tools.
 - `src/ui` — application state, panels, canvas rendering and input, dialogs, history, selection, and widgets.
 - `src/i18n_backend.rs` — custom locale backend that loads TOML translation files.
 - `src/logger.rs` — logger that writes to both console and an in-memory buffer for the UI.
