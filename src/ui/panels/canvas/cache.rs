@@ -58,10 +58,37 @@ pub fn get_or_build<'a>(
 
     if !cache.contains_key(&key) {
         let segments = build_segments(layer);
-        cache.insert(key.clone(), SegmentCacheEntry { segments });
+        let bbox = segments_bbox(&segments);
+        cache.insert(
+            key.clone(),
+            SegmentCacheEntry {
+                segments,
+                bbox,
+            },
+        );
     }
 
     cache.get(&key)
+}
+
+fn segments_bbox(segments: &[(f64, f64, f64, f64)]) -> Option<(f64, f64, f64, f64)> {
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+
+    for (x0, y0, x1, y1) in segments {
+        min_x = min_x.min(*x0).min(*x1);
+        min_y = min_y.min(*y0).min(*y1);
+        max_x = max_x.max(*x0).max(*x1);
+        max_y = max_y.max(*y0).max(*y1);
+    }
+
+    if min_x.is_finite() && min_y.is_finite() && max_x.is_finite() && max_y.is_finite() {
+        Some((min_x, min_y, max_x, max_y))
+    } else {
+        None
+    }
 }
 
 fn build_segments(layer: &Layer) -> Vec<(f64, f64, f64, f64)> {

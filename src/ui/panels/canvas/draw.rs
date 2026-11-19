@@ -5,7 +5,7 @@ use crate::core::layer::{Layer, LayerSource};
 use crate::core::vector::VectorPath;
 use crate::ui::selection::HandleKind;
 use crate::ui::{
-    CanvasTransform, LaserApp, colors,
+    CanvasTransform, LaserApp, colors, line_raster,
     widget::canvas::{draw_axes, draw_grid, draw_work_area},
 };
 
@@ -28,7 +28,21 @@ pub fn render_background(painter: &Painter, transform: &CanvasTransform, app: &L
     }
 }
 
+/// Draws the width and height of the work area around it.
 fn draw_dimensions(painter: &Painter, transform: &CanvasTransform, (w, h): (f64, f64)) {
+    draw_rect_dimensions(painter, transform, (0.0, 0.0, w, h));
+}
+
+/// Draws the width and height of a world-space rectangle just outside it.
+///
+/// Shared by the work area and the current selection, so both read the same way.
+fn draw_rect_dimensions(
+    painter: &Painter,
+    transform: &CanvasTransform,
+    (min_x, min_y, max_x, max_y): (f64, f64, f64, f64),
+) {
+    let w = max_x - min_x;
+    let h = max_y - min_y;
     if w <= 0.0 || h <= 0.0 {
         return;
     }
@@ -38,9 +52,9 @@ fn draw_dimensions(painter: &Painter, transform: &CanvasTransform, (w, h): (f64,
     let stroke = Stroke::new(1.0, line_color);
     let font = egui::FontId::proportional(12.0);
 
-    let p_bot_left = transform.to_screen(0.0, 0.0);
-    let p_bot_right = transform.to_screen(w, 0.0);
-    let p_top_left = transform.to_screen(0.0, h);
+    let p_bot_left = transform.to_screen(min_x, min_y);
+    let p_bot_right = transform.to_screen(max_x, min_y);
+    let p_top_left = transform.to_screen(min_x, max_y);
 
     let offset_y = 15.0;
     let tick_size = 5.0;
@@ -109,6 +123,57 @@ fn draw_dimensions(painter: &Painter, transform: &CanvasTransform, (w, h): (f64,
         font,
         text_color,
     );
+}
+
+/// World-space bounding box of whatever is currently selected.
+///
+/// Returns `None` when nothing is selected, which is what keeps the dimensions off the
+/// canvas until an object is picked.
+fn selection_bounds(app: &LaserApp) -> Option<(f64, f64, f64, f64)> {
+    let sel = &app.ui_state.selection;
+
+    // A selected shape is measured on its own rather than through its whole layer.
+    if let (Some(li), Some(si)) = (sel.layer, sel.shape) {
+        let layer = app.project.layers.get(li)?;
+        let shape = layer.shapes.get(si)?;
+
+        let mut path = VectorPath::new();
+        path.nodes = shape.nodes.clone();
+        path.stroke = shape.stroke.clone();
+        path.closed = shape.closed;
+        return path.bounds(0.1);
+    }
+
+    let mut ids = sel.layers.clone();
+    if let Some(id) = sel.layer {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    let mut any = false;
+
+    for id in ids {
+        if let Some(layer) = app.project.layers.get(id) {
+            if let Some((a, b, c, d)) = layer.bounds() {
+                min_x = min_x.min(a);
+                min_y = min_y.min(b);
+                max_x = max_x.max(c);
+                max_y = max_y.max(d);
+                any = true;
+            }
+        }
+    }
+
+    if any && min_x.is_finite() && min_y.is_finite() {
+        Some((min_x, min_y, max_x, max_y))
+    } else {
+        None
+    }
 }
 
 pub fn render_layers(
@@ -186,6 +251,11 @@ pub fn render_overlays(painter: &Painter, transform: &CanvasTransform, app: &Las
             egui::StrokeKind::Inside,
         );
     }
+
+    // Dimensions of the selection, drawn exactly like the work area's.
+    if let Some(bounds) = selection_bounds(app) {
+        draw_rect_dimensions(painter, transform, bounds);
+    }
 }
 
 #[inline]
@@ -196,6 +266,145 @@ fn segment_visible(a: Pos2, b: Pos2, view: Rect, pad: f32) -> bool {
     let max_y = a.y.max(b.y) + pad;
     max_x >= view.min.x && min_x <= view.max.x && max_y >= view.min.y && min_y <= view.max.y
 }
+
+/// Draws a segment based layer (G-code).
+///
+/// Thousands of separate line shapes per frame are far too expensive, so the layer is
+/// rasterized once into a texture which is then drawn as a single quad. The texture is
+/// only rebuilt when the zoom crosses a power of two, which keeps panning/zooming cheap.
+/// When the cached texture would be too coarse for the current zoom, the segments are
+/// drawn directly with view culling plus a sub-pixel simplification pass.
+fn draw_segment_layer(
+    ui: &mut egui::Ui,
+    painter: &Painter,
+    transform: &CanvasTransform,
+    layer: &Layer,
+    entry: &SegmentCacheEntry,
+    color: Color32,
+    texture_cache: &mut std::collections::HashMap<String, egui::TextureHandle>,
+) {
+    let Some((min_x, min_y, max_x, max_y)) = entry.bbox else {
+        return;
+    };
+
+    let ox = layer.offset[0];
+    let oy = layer.offset[1];
+
+    let p0 = transform.to_screen(min_x + ox, max_y + oy);
+    let p1 = transform.to_screen(max_x + ox, min_y + oy);
+    let rect = Rect::from_two_pos(p0, p1);
+
+    if rect.width() < 1.0 || rect.height() < 1.0 {
+        return;
+    }
+
+    let ppp = ui.ctx().pixels_per_point();
+    let needed = transform.scale as f64 * ppp as f64;
+    let max_mm = (max_x - min_x).max(max_y - min_y).max(1e-3);
+    let level = line_raster::texture_level(needed, max_mm);
+    let screen_px_per_texel = (needed / level).max(0.25);
+
+    if screen_px_per_texel <= 2.0 {
+        if let Some(key) = cache::layer_cache_key(layer) {
+            let texture = texture_cache
+                .entry(format!("gsegs::{}::{}", key, level))
+                .or_insert_with(|| {
+                    ui.ctx().load_texture(
+                        format!("layer_gsegs_{}_{}", layer.name, level),
+                        rasterize_segments(entry, level),
+                        egui::TextureOptions::LINEAR,
+                    )
+                });
+
+            painter.image(
+                texture.id(),
+                rect,
+                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                color,
+            );
+            return;
+        }
+    }
+
+    draw_segments_lod(painter, transform, &entry.segments, ox, oy, color);
+}
+
+fn rasterize_segments(entry: &SegmentCacheEntry, level: f64) -> egui::ColorImage {
+    let Some((min_x, min_y, max_x, max_y)) = entry.bbox else {
+        return egui::ColorImage::filled([1, 1], Color32::TRANSPARENT);
+    };
+
+    let width_px = ((max_x - min_x) * level).ceil().max(1.0) as u32;
+    let height_px = ((max_y - min_y) * level).ceil().max(1.0) as u32;
+
+    let Some(mut pixmap) = line_raster::make_pixmap(width_px, height_px) else {
+        return egui::ColorImage::filled([1, 1], Color32::TRANSPARENT);
+    };
+
+    line_raster::stroke_segments(
+        &mut pixmap,
+        entry.segments.iter().map(|(x0, y0, x1, y1)| {
+            (
+                ((x0 - min_x) * level) as f32,
+                ((max_y - y0) * level) as f32,
+                ((x1 - min_x) * level) as f32,
+                ((max_y - y1) * level) as f32,
+            )
+        }),
+        [255, 255, 255, 255],
+    );
+
+    line_raster::to_color_image(&pixmap)
+}
+
+/// Fallback for zoom levels where a texture would be too blurry.
+///
+/// Segments shorter than `TOLERANCE_PX` are merged into a single straight line, which
+/// removes the sub-pixel work of dense raster engraving while keeping the picture intact.
+fn draw_segments_lod(
+    painter: &Painter,
+    transform: &CanvasTransform,
+    segments: &[(f64, f64, f64, f64)],
+    ox: f64,
+    oy: f64,
+    color: Color32,
+) {
+    const TOLERANCE_PX: f32 = 0.6;
+
+    let stroke = Stroke::new(1.0, color);
+    let view = transform.rect;
+    let pad = 2.0f32;
+
+    let mut prev_end: Option<Pos2> = None;
+    let mut last_emitted: Option<Pos2> = None;
+
+    for (x0, y0, x1, y1) in segments {
+        let a = transform.to_screen(x0 + ox, y0 + oy);
+        let b = transform.to_screen(x1 + ox, y1 + oy);
+
+        if !segment_visible(a, b, view, pad) {
+            prev_end = Some(b);
+            last_emitted = None;
+            continue;
+        }
+
+        match last_emitted {
+            Some(from) if prev_end.is_some_and(|p| (p - a).length() <= 0.01) => {
+                if (b - from).length() >= TOLERANCE_PX {
+                    painter.line_segment([from, b], stroke);
+                    last_emitted = Some(b);
+                }
+            }
+            _ => {
+                painter.line_segment([a, b], stroke);
+                last_emitted = Some(b);
+            }
+        }
+
+        prev_end = Some(b);
+    }
+}
+
 
 #[allow(clippy::too_many_arguments)]
 fn draw_layer(
@@ -272,33 +481,26 @@ fn draw_layer(
             Color32::from_rgb(layer.color[0], layer.color[1], layer.color[2])
         };
 
-        if let Some(entry) = cache::get_or_build(segment_cache, layer) {
-            let ox = layer.offset[0];
-            let oy = layer.offset[1];
-            let stroke = Stroke::new(1.0, color);
-            let view = transform.rect;
-            let pad = 2.0f32;
-            let mut shapes: Vec<egui::Shape> = Vec::with_capacity(entry.segments.len());
-            for (x0, y0, x1, y1) in &entry.segments {
-                let a = transform.to_screen(x0 + ox, y0 + oy);
-                let b = transform.to_screen(x1 + ox, y1 + oy);
-                if !segment_visible(a, b, view, pad) {
-                    continue;
-                }
-                shapes.push(egui::Shape::line_segment([a, b], stroke));
+        match cache::get_or_build(segment_cache, layer) {
+            Some(entry) => draw_segment_layer(
+                ui,
+                painter,
+                transform,
+                layer,
+                entry,
+                color,
+                texture_cache,
+            ),
+            None => {
+                let alpha = if layer_selected { 180 } else { 120 };
+                let fallback = Color32::from_rgba_unmultiplied(
+                    layer.color[0],
+                    layer.color[1],
+                    layer.color[2],
+                    alpha,
+                );
+                painter.rect_filled(rect, 2.0, fallback);
             }
-            if !shapes.is_empty() {
-                painter.extend(shapes);
-            }
-        } else {
-            let alpha = if layer_selected { 180 } else { 120 };
-            let fallback = Color32::from_rgba_unmultiplied(
-                layer.color[0],
-                layer.color[1],
-                layer.color[2],
-                alpha,
-            );
-            painter.rect_filled(rect, 2.0, fallback);
         }
     }
 

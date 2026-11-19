@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 
 use crate::core::gcode::{normalize_gcode, parse_gcode_file_segments, transform_for_layer};
@@ -6,7 +8,30 @@ use crate::core::image::{
 };
 use crate::core::layer::{EngraveMode, Layer, LayerSource};
 use crate::core::vector::VectorPath;
+use crate::ui::line_raster;
+use crate::ui::panels::canvas::state::PreviewWindow;
 use crate::ui::LaserApp;
+
+/// Rasterizations that took less than this are cheap enough to redo on every frame.
+const CHEAP_RENDER: Duration = Duration::from_millis(4);
+
+/// Minimum interval between two expensive rasterizations while the view is still moving.
+/// Stretching the stale texture in between keeps panning and zooming responsive.
+const INTERACTIVE_RENDER_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Minimum interval between two updates of the processed texture while the progress
+/// slider is dragged.
+const PROGRESS_INTERVAL: Duration = Duration::from_millis(33);
+
+/// Extra margin around the visible area that is included in the rasterized texture, as a
+/// fraction of the visible size. Lets short pans reuse the cached texture.
+const WORLD_PADDING: f64 = 0.2;
+
+/// Color of segments that are not processed yet.
+const PENDING_COLOR: [u8; 4] = [255, 140, 40, 30];
+
+/// Color of already processed segments.
+const DONE_COLOR: [u8; 4] = [255, 140, 40, 255];
 
 impl LaserApp {
     pub(crate) fn open_preview(&mut self) {
@@ -66,6 +91,9 @@ impl LaserApp {
                     self.canvas.preview_window.zoom = new;
                 }
 
+                let ppp = ui.ctx().pixels_per_point();
+                update_preview_raster(ui.ctx(), &mut self.canvas.preview_window, rect, ppp);
+
                 draw_preview_grid_lines(
                     &painter,
                     rect,
@@ -74,7 +102,7 @@ impl LaserApp {
                 );
                 draw_preview_axes(&painter, rect, &self.canvas.preview_window);
                 draw_preview_bounds(&painter, rect, &self.canvas.preview_window);
-                draw_preview_lines(&painter, rect, &self.canvas.preview_window);
+                draw_preview_raster(&painter, rect, &self.canvas.preview_window);
 
                 ui.separator();
 
@@ -179,6 +207,8 @@ fn rebuild_preview(app: &mut LaserApp) {
     app.canvas.preview_window.lines = lines;
     app.canvas.preview_window.bounds = bounds;
     app.canvas.preview_window.progress = 1.0;
+    app.canvas.preview_window.revision = app.canvas.preview_window.revision.wrapping_add(1);
+    app.canvas.preview_window.raster = Default::default();
 }
 
 fn layer_origin(layer: &Layer) -> (f64, f64) {
@@ -439,25 +469,268 @@ fn draw_preview_bounds(
     }
 }
 
-fn draw_preview_lines(
-    painter: &egui::Painter,
-    rect: Rect,
-    pw: &crate::ui::panels::canvas::state::PreviewWindow,
-) {
+/// Keeps the cached rasterization of the preview geometry in sync with the view.
+///
+/// A huge amount of segments cannot be redrawn every frame, so an up-to-date texture is
+/// reused (stretched to the current view) while the view is still moving, and the crisp
+/// rasterization happens as soon as the view stops changing.
+fn update_preview_raster(ctx: &egui::Context, pw: &mut PreviewWindow, rect: Rect, ppp: f32) {
+    if pw.lines.is_empty() {
+        return;
+    }
+
     let total = pw.lines.len();
-    let current_count = (total as f32 * pw.progress) as usize;
+    let done = ((total as f32 * pw.progress.clamp(0.0, 1.0)) as usize).min(total);
+    let key = preview_view_key(pw, rect, ppp);
 
-    for (i, &(x0, y0, x1, y1)) in pw.lines.iter().enumerate() {
-        let a = to_screen(pw, rect, x0, y0);
-        let b = to_screen(pw, rect, x1, y1);
+    if pw.raster.key != key {
+        let visible = visible_world_rect(pw, rect);
+        let view_settled = pw.raster.pending_key == key;
+        let uncovered = visible.is_some_and(|v| !covers(pw.raster.world_rect, v));
 
-        if i < current_count {
-            painter.line_segment([a, b], Stroke::new(1.0, Color32::from_rgb(255, 140, 40)));
-        } else {
-            painter.line_segment(
-                [a, b],
-                Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 140, 40, 30)),
+        // Never rasterize more often than the previous one took, so a heavy job cannot
+        // block the frame it was started in over and over while the view keeps moving.
+        let interval = INTERACTIVE_RENDER_INTERVAL.max(pw.raster.last_cost * 4);
+        let throttled = pw
+            .raster
+            .last_render
+            .is_some_and(|t| t.elapsed() < interval);
+
+        let must_render = pw.raster.base.is_none()
+            || view_settled
+            || pw.raster.last_cost < CHEAP_RENDER
+            || (uncovered && !throttled);
+
+        if must_render {
+            let started = Instant::now();
+            render_preview_raster(ctx, pw, rect, ppp, done);
+            pw.raster.last_cost = started.elapsed();
+            pw.raster.last_render = Some(Instant::now());
+            pw.raster.key = key;
+            pw.raster.pending_key = key;
+            return;
+        }
+
+        pw.raster.pending_key = key;
+
+        // The view is still moving and the texture is stale or does not cover it yet;
+        // make sure a frame comes along that can pick up the settled render.
+        ctx.request_repaint_after(interval);
+    }
+
+    if pw.raster.drawn != done {
+        update_preview_done(ctx, pw, done);
+    }
+}
+
+fn preview_view_key(pw: &PreviewWindow, rect: Rect, ppp: f32) -> u64 {
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    pw.revision.hash(&mut hasher);
+    rect.width().to_bits().hash(&mut hasher);
+    rect.height().to_bits().hash(&mut hasher);
+    ppp.to_bits().hash(&mut hasher);
+    pw.zoom.to_bits().hash(&mut hasher);
+    pw.offset.x.to_bits().hash(&mut hasher);
+    pw.offset.y.to_bits().hash(&mut hasher);
+    hasher.finish()
+}
+
+fn covers(outer: (f64, f64, f64, f64), inner: (f64, f64, f64, f64)) -> bool {
+    outer.0 <= inner.0 && outer.1 <= inner.1 && outer.2 >= inner.2 && outer.3 >= inner.3
+}
+
+/// Rasterizes the visible geometry into the base and progress textures.
+fn render_preview_raster(
+    ctx: &egui::Context,
+    pw: &mut PreviewWindow,
+    rect: Rect,
+    ppp: f32,
+    done: usize,
+) {
+    let Some((min_x, min_y, max_x, max_y)) = visible_world_rect(pw, rect) else {
+        return;
+    };
+
+    let pad_x = (max_x - min_x) * WORLD_PADDING;
+    let pad_y = (max_y - min_y) * WORLD_PADDING;
+    let world_rect = (min_x - pad_x, min_y - pad_y, max_x + pad_x, max_y + pad_y);
+
+    let needed = pw.zoom.max(1e-3) as f64 * ppp.max(0.1) as f64;
+    let max_mm = (world_rect.2 - world_rect.0)
+        .max(world_rect.3 - world_rect.1)
+        .max(1e-3);
+    let level = needed.min(line_raster::MAX_TEXTURE_DIM / max_mm).max(1e-3);
+
+    let width_px = (((world_rect.2 - world_rect.0) * level).ceil().max(1.0)) as u32;
+    let height_px = (((world_rect.3 - world_rect.1) * level).ceil().max(1.0)) as u32;
+
+    let (Some(mut base), Some(mut processed)) = (
+        line_raster::make_pixmap(width_px, height_px),
+        line_raster::make_pixmap(width_px, height_px),
+    ) else {
+        return;
+    };
+
+    line_raster::stroke_segments(
+        &mut base,
+        pixel_segments(&pw.lines, world_rect, level),
+        PENDING_COLOR,
+    );
+
+    let done_count = done.min(pw.lines.len());
+    if done_count > 0 {
+        line_raster::stroke_segments(
+            &mut processed,
+            pixel_segments(&pw.lines[..done_count], world_rect, level),
+            DONE_COLOR,
+        );
+    }
+
+    pw.raster.world_rect = world_rect;
+    pw.raster.level = level;
+    pw.raster.drawn = done_count;
+    pw.raster.done_pixmap = Some(processed);
+
+    upload_pixmap(ctx, &mut pw.raster.base, "preview_base", &base);
+    if let Some(pixmap) = pw.raster.done_pixmap.as_ref() {
+        upload_pixmap(ctx, &mut pw.raster.done, "preview_done", pixmap);
+    }
+}
+
+/// Extends the "processed" texture up to `done` segments.
+///
+/// Growing the progress only strokes the new segments on top of the existing texture,
+/// which keeps dragging the progress slider cheap even for very large jobs.
+fn update_preview_done(ctx: &egui::Context, pw: &mut PreviewWindow, done: usize) {
+    if pw.raster.done_pixmap.is_none() {
+        return;
+    }
+
+    // Dragging the slider backwards means re-stroking every processed segment, which is
+    // far too expensive to do on each frame of the drag.
+    if pw
+        .raster
+        .last_progress
+        .is_some_and(|t| t.elapsed() < PROGRESS_INTERVAL)
+    {
+        ctx.request_repaint_after(PROGRESS_INTERVAL);
+        return;
+    }
+    pw.raster.last_progress = Some(Instant::now());
+
+    let world_rect = pw.raster.world_rect;
+    let level = pw.raster.level;
+
+    if done < pw.raster.drawn {
+        if let Some(pixmap) = pw.raster.done_pixmap.as_mut() {
+            pixmap.fill(tiny_skia::Color::TRANSPARENT);
+        }
+        pw.raster.drawn = 0;
+    }
+
+    let from = pw.raster.drawn.min(pw.lines.len());
+    let to = done.min(pw.lines.len());
+
+    if from < to {
+        if let Some(pixmap) = pw.raster.done_pixmap.as_mut() {
+            line_raster::stroke_segments(
+                pixmap,
+                pixel_segments(&pw.lines[from..to], world_rect, level),
+                DONE_COLOR,
             );
         }
+
+        pw.raster.drawn = to;
+    }
+
+    if let Some(pixmap) = pw.raster.done_pixmap.as_ref() {
+        let image = line_raster::to_color_image(pixmap);
+        upload_image(ctx, &mut pw.raster.done, "preview_done", image);
+    }
+}
+
+/// Maps world-space segments into the pixel space of a rasterized texture.
+///
+/// Segments outside `world_rect` are skipped, so only what is really visible is stroked.
+fn pixel_segments(
+    lines: &[(f64, f64, f64, f64)],
+    world_rect: (f64, f64, f64, f64),
+    level: f64,
+) -> impl Iterator<Item=(f32, f32, f32, f32)> + '_ {
+    let (x0, y0, x1, y1) = world_rect;
+    let pad = 1.0 / level;
+
+    lines.iter().filter_map(move |&(ax, ay, bx, by)| {
+        if ax.max(bx) < x0 - pad
+            || ax.min(bx) > x1 + pad
+            || ay.max(by) < y0 - pad
+            || ay.min(by) > y1 + pad
+        {
+            return None;
+        }
+
+        Some((
+            ((ax - x0) * level) as f32,
+            ((y1 - ay) * level) as f32,
+            ((bx - x0) * level) as f32,
+            ((y1 - by) * level) as f32,
+        ))
+    })
+}
+
+fn visible_world_rect(pw: &PreviewWindow, rect: Rect) -> Option<(f64, f64, f64, f64)> {
+    let (ax, ay) = to_world(pw, rect, egui::pos2(rect.min.x, rect.max.y));
+    let (bx, by) = to_world(pw, rect, egui::pos2(rect.max.x, rect.min.y));
+
+    let (min_x, max_x) = (ax.min(bx), ax.max(bx));
+    let (min_y, max_y) = (ay.min(by), ay.max(by));
+
+    if !(max_x > min_x && max_y > min_y) {
+        return None;
+    }
+
+    Some((min_x, min_y, max_x, max_y))
+}
+
+fn upload_pixmap(
+    ctx: &egui::Context,
+    slot: &mut Option<egui::TextureHandle>,
+    name: &str,
+    pixmap: &tiny_skia::Pixmap,
+) {
+    upload_image(ctx, slot, name, line_raster::to_color_image(pixmap));
+}
+
+fn upload_image(
+    ctx: &egui::Context,
+    slot: &mut Option<egui::TextureHandle>,
+    name: &str,
+    image: egui::ColorImage,
+) {
+    match slot {
+        Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
+        None => *slot = Some(ctx.load_texture(name, image, egui::TextureOptions::LINEAR)),
+    }
+}
+
+fn draw_preview_raster(painter: &egui::Painter, rect: Rect, pw: &PreviewWindow) {
+    let (x0, y0, x1, y1) = pw.raster.world_rect;
+    if !(x1 > x0 && y1 > y0) {
+        return;
+    }
+
+    let p0 = to_screen(pw, rect, x0, y1);
+    let p1 = to_screen(pw, rect, x1, y0);
+    let screen_rect = Rect::from_two_pos(p0, p1);
+    let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
+
+    if let Some(texture) = &pw.raster.base {
+        painter.image(texture.id(), screen_rect, uv, Color32::WHITE);
+    }
+
+    if let Some(texture) = &pw.raster.done {
+        painter.image(texture.id(), screen_rect, uv, Color32::WHITE);
     }
 }

@@ -148,26 +148,12 @@ impl LaserApp {
                 t!("ui.menu.show_work_area"),
             );
             ui.separator();
-            if ui
-                .checkbox(&mut self.tools.snap_enabled, t!("ui.menu.snap_to_grid"))
-                .changed()
-            {
-                self.tools.snap_mm = self.app_config.grid_step_mm;
-            }
-            ui.add_enabled_ui(self.tools.snap_enabled, |ui| {
-                let mut step = self.tools.snap_mm;
-                if ui
-                    .add(
-                        egui::DragValue::new(&mut step)
-                            .speed(0.1)
-                            .range(0.01..=100.0)
-                            .suffix(" mm"),
-                    )
-                    .changed()
-                {
-                    self.tools.snap_mm = step;
-                }
-            });
+            // Snapping is always on at a fixed step, so this is a status line, not a control.
+            ui.label(format!(
+                "{}: {:.1} mm",
+                t!("ui.menu.snap_to_grid"),
+                crate::ui::tools_state::SNAP_MM
+            ));
         });
 
         ui.menu_button(help_label, |ui| {

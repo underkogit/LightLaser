@@ -4,6 +4,9 @@ use crate::core::tools::{
 };
 use crate::core::vector::CurvePoint;
 
+/// Grid snapping is always on, at this fixed step.
+pub const SNAP_MM: f64 = 1.0;
+
 pub struct ToolsState {
     pub current: ToolKind,
     pub select: SelectTool,
@@ -24,8 +27,8 @@ impl Default for ToolsState {
             curve: CurveTool::new(),
             rect: RectTool::new(),
             circle: CircleTool::new(),
-            snap_mm: 1.0,
-            snap_enabled: false,
+            snap_mm: SNAP_MM,
+            snap_enabled: true,
         }
     }
 }

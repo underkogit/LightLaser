@@ -18,6 +18,7 @@ pub mod app_config;
 mod canvas_transform;
 mod colors;
 mod history;
+mod line_raster;
 mod panels;
 mod project_io;
 mod selection;
