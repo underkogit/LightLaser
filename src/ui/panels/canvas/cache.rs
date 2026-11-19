@@ -46,6 +46,7 @@ pub fn layer_cache_key(layer: &Layer) -> Option<String> {
                 .map(|c| format!("{:?}", c))
                 .unwrap_or_default(),
         )),
+        LayerSource::Gerber { path } => Some(format!("gerber::{}", path)),
         LayerSource::Vector => None,
     }
 }
@@ -174,6 +175,9 @@ fn build_segments(layer: &Layer) -> Vec<(f64, f64, f64, f64)> {
             let raw = parse_gcode_file_segments(Path::new(path));
             let transformed = transform_for_layer(raw, layer);
             normalize_gcode(transformed)
+        }
+        LayerSource::Gerber { path } => {
+            crate::core::image::parse_gerber_segments(Path::new(path)).unwrap_or_default()
         }
         LayerSource::Vector => Vec::new(),
     }

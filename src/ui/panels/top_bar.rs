@@ -48,22 +48,28 @@ impl LaserApp {
                 ui.close();
             }
             ui.separator();
-            if ui.button(t!("ui.menu.add_image")).clicked() {
-                self.add_image_interactive();
-                ui.close();
-            }
-            if ui.button(t!("ui.menu.add_svg")).clicked() {
-                self.add_svg_interactive();
-                ui.close();
-            }
-            if ui.button("Add PCB SVG").clicked() {
-                self.add_svg_pcb_interactive();
-                ui.close();
-            }
-            if ui.button(t!("ui.menu.add_gcode")).clicked() {
-                self.add_gcode_interactive();
-                ui.close();
-            }
+            ui.menu_button(t!("ui.menu.import").to_string(), |ui| {
+                if ui.button(t!("ui.menu.add_image")).clicked() {
+                    self.add_image_interactive();
+                    ui.close();
+                }
+                if ui.button(t!("ui.menu.add_svg")).clicked() {
+                    self.add_svg_interactive();
+                    ui.close();
+                }
+                if ui.button("Add PCB SVG").clicked() {
+                    self.add_svg_pcb_interactive();
+                    ui.close();
+                }
+                if ui.button(t!("ui.menu.add_gcode")).clicked() {
+                    self.add_gcode_interactive();
+                    ui.close();
+                }
+                if ui.button(t!("ui.menu.add_gerber")).clicked() {
+                    self.add_gerber_interactive();
+                    ui.close();
+                }
+            });
             ui.separator();
             if ui.button(t!("ui.menu.export_gcode")).clicked() {
                 self.export_dialog_open = true;

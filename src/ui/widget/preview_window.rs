@@ -333,6 +333,15 @@ fn build_layer_segments(layer: &Layer) -> Vec<(f64, f64, f64, f64)> {
                 .map(|(x0, y0, x1, y1)| (x0 + ox, y0 + oy, x1 + ox, y1 + oy))
                 .collect()
         }
+        LayerSource::Gerber { path } => {
+            let ox = layer.offset[0];
+            let oy = layer.offset[1];
+            crate::core::image::parse_gerber_segments(std::path::Path::new(path))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(x0, y0, x1, y1)| (x0 + ox, y0 + oy, x1 + ox, y1 + oy))
+                .collect()
+        }
         LayerSource::Vector => Vec::new(),
     }
 }

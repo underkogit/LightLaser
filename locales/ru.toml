@@ -50,6 +50,8 @@
 "ui.menu.add_image" = "Добавить изображение"
 "ui.menu.add_svg" = "Добавить SVG"
 "ui.menu.add_gcode" = "Добавить G-code"
+"ui.menu.add_gerber" = "Добавить Gerber"
+"ui.menu.import" = "Импорт"
 "ui.menu.export_gcode" = "Экспорт G-code"
 "ui.menu.exit" = "Выход"
 "ui.menu.zoom_in" = "Приблизить"

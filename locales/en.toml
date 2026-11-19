@@ -53,6 +53,8 @@
 "ui.menu.add_image" = "Add image"
 "ui.menu.add_svg" = "Add SVG"
 "ui.menu.add_gcode" = "Add G-code"
+"ui.menu.add_gerber" = "Add Gerber"
+"ui.menu.import" = "Import"
 "ui.menu.export_gcode" = "Export G-code"
 "ui.menu.exit" = "Exit"
 "ui.menu.zoom_in" = "Zoom in"

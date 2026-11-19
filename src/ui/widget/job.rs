@@ -121,6 +121,7 @@ impl LaserApp {
                     }
                 }
                 LayerSource::Gcode { path } => build_gcode_layer(path, layer)?,
+                LayerSource::Gerber { path } => build_gerber_layer(path, layer)?,
                 LayerSource::Vector => export_vector_layer(layer, &layer.params, origin)
                     .map_err(|e| format!("vector '{}': {}", layer.name, e))?,
             };
@@ -220,6 +221,103 @@ fn build_gcode_layer(path: &str, layer: &Layer) -> Result<Vec<GcodeCommand>, Str
     cmds.push(make_cmd("M5".to_string()));
 
     Ok(cmds)
+}
+
+/// Turns a Gerber file into laser moves.
+///
+/// Segments that share an endpoint are chained into polylines first, so the laser is
+/// switched on once per continuous trace instead of once per segment.
+fn build_gerber_layer(path: &str, layer: &Layer) -> Result<Vec<GcodeCommand>, String> {
+    let segments = crate::core::image::parse_gerber_segments(std::path::Path::new(path))
+        .map_err(|e| format!("gerber '{}': {}", path, e))?;
+
+    if segments.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let polylines = chain_segments(&segments);
+
+    let ox = layer.offset[0];
+    let oy = layer.offset[1];
+
+    let s_max = 1000.0;
+    let s_on = ((layer.params.power_percent.clamp(0.0, 100.0) / 100.0) * s_max).round();
+    let laser_on = if layer.params.dynamic_power {
+        format!("M4 S{:.0}", s_on)
+    } else {
+        format!("M3 S{:.0}", s_on)
+    };
+
+    let mut cmds = Vec::new();
+    cmds.push(make_cmd("G21".to_string()));
+    cmds.push(make_cmd("G90".to_string()));
+    cmds.push(make_cmd(format!("G1 F{:.0}", layer.params.feed_rate)));
+
+    for pass in 0..layer.params.passes.max(1) {
+        if pass > 0 {
+            cmds.push(make_cmd("; --- next pass ---".to_string()));
+        }
+
+        for polyline in &polylines {
+            let first = polyline[0];
+
+            cmds.push(make_cmd("M5".to_string()));
+            cmds.push(make_cmd(format!(
+                "G0 X{:.4} Y{:.4}",
+                first.0 + ox,
+                first.1 + oy
+            )));
+            cmds.push(make_cmd(laser_on.clone()));
+
+            for point in polyline.iter().skip(1) {
+                cmds.push(make_cmd(format!(
+                    "G1 X{:.4} Y{:.4}",
+                    point.0 + ox,
+                    point.1 + oy
+                )));
+            }
+
+            cmds.push(make_cmd("M5".to_string()));
+        }
+    }
+
+    cmds.push(make_cmd("M5".to_string()));
+
+    Ok(cmds)
+}
+
+/// Joins segments whose end point is the next segment's start point.
+fn chain_segments(segments: &[(f64, f64, f64, f64)]) -> Vec<Vec<(f64, f64)>> {
+    const EPS: f64 = 1e-9;
+
+    let mut polylines: Vec<Vec<(f64, f64)>> = Vec::new();
+    let mut current: Vec<(f64, f64)> = Vec::new();
+
+    for &(x0, y0, x1, y1) in segments {
+        let start = (x0, y0);
+        let end = (x1, y1);
+
+        let continues = current
+            .last()
+            .is_some_and(|last| (last.0 - start.0).abs() <= EPS && (last.1 - start.1).abs() <= EPS);
+
+        if continues {
+            current.push(end);
+        } else {
+            if current.len() > 1 {
+                polylines.push(std::mem::take(&mut current));
+            }
+            current.clear();
+            current.push(start);
+            current.push(end);
+        }
+    }
+
+    if current.len() > 1 {
+        polylines.push(current);
+    }
+
+    polylines
 }
 
 fn parse_gcode_raw(content: &str) -> Vec<(f64, f64, f64, f64)> {

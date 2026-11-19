@@ -129,6 +129,22 @@ impl LaserApp {
         self.center_view();
     }
 
+    pub(crate) fn add_gerber_interactive(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter(
+                "Gerber",
+                &[
+                    "gbr", "ger", "gerber", "gtl", "gbl", "gts", "gbs", "gto", "gbo", "gko", "gm1",
+                ],
+            )
+            .pick_file()
+        else {
+            return;
+        };
+        self.add_gerber_from_path(&path);
+        self.center_view();
+    }
+
     pub(crate) fn add_image_from_path(&mut self, path: &Path) {
         match crate::core::image::load_image(path) {
             Ok(img) => {
@@ -199,6 +215,50 @@ impl LaserApp {
             },
         );
         layer.set_bounds(min_x, min_y, max_x, max_y);
+        self.push_history();
+        self.project.add_layer(layer);
+        log::info!("{}", t!("ui.info.layer_added", name = name));
+    }
+
+    pub(crate) fn add_gerber_from_path(&mut self, path: &Path) {
+        let segments = match crate::core::image::parse_gerber_segments(path) {
+            Ok(segments) => segments,
+            Err(e) => {
+                log::error!("{}", t!("ui.error.add_layer", e = e));
+                return;
+            }
+        };
+
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("gerber")
+            .to_string();
+
+        let mut min_x = f64::INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+
+        for (x0, y0, x1, y1) in &segments {
+            min_x = min_x.min(*x0).min(*x1);
+            min_y = min_y.min(*y0).min(*y1);
+            max_x = max_x.max(*x0).max(*x1);
+            max_y = max_y.max(*y0).max(*y1);
+        }
+
+        let mut layer = Layer::new(
+            name.clone(),
+            crate::ui::colors::LAYER_DEFAULT,
+            LayerSource::Gerber {
+                path: path.to_string_lossy().to_string(),
+            },
+        );
+
+        if min_x.is_finite() && min_y.is_finite() {
+            layer.set_bounds(min_x, min_y, max_x, max_y);
+        }
+
         self.push_history();
         self.project.add_layer(layer);
         log::info!("{}", t!("ui.info.layer_added", name = name));

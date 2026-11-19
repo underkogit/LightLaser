@@ -21,6 +21,7 @@ pub enum LayerSource {
     Image { path: String },
     Svg { path: String },
     Gcode { path: String },
+    Gerber { path: String },
     Vector,
 }
 
@@ -30,6 +31,7 @@ impl LayerSource {
             LayerSource::Image { .. } => "image",
             LayerSource::Svg { .. } => "svg",
             LayerSource::Gcode { .. } => "gcode",
+            LayerSource::Gerber { .. } => "gerber",
             LayerSource::Vector => "vector",
         }
     }

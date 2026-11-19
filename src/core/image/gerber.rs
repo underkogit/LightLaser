@@ -1,204 +1,627 @@
+//! Gerber (RS-274X) import.
+//!
+//! A Gerber document is flattened into plain line segments in millimetres - the same
+//! representation the G-code layers use - so rendering, caching, previewing and exporting
+//! all work without knowing anything about Gerber.
+
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::BufReader;
 use std::path::Path;
 
-pub struct GerberPath {
-    pub points: Vec<(f64, f64)>,
-    pub closed: bool,
+use evalexpr::{
+    Context, ContextWithMutableVariables, HashMapContext, Value, eval_float_with_context,
+};
+use gerber_parser::GerberDoc;
+use gerber_parser::gerber_types::{
+    Aperture, Command, CoordinateOffset, Coordinates, DCode, ExtendedCode, FunctionCode, GCode,
+    InterpolationMode, MacroContent, MacroDecimal, MacroInteger, MCode, Operation, Unit,
+};
+
+/// A line segment in millimetres: `(x0, y0, x1, y1)`.
+pub type Segment = (f64, f64, f64, f64);
+
+/// Straight pieces used to approximate a full circle.
+const CIRCLE_STEPS: usize = 48;
+
+/// Reads a Gerber file and flattens it into line segments in millimetres.
+pub fn parse_gerber_segments(path: &Path) -> Result<Vec<Segment>, String> {
+    let file = File::open(path).map_err(|e| format!("open {}: {}", path.display(), e))?;
+    let doc = gerber_parser::parse(BufReader::new(file))
+        .map_err(|(_, e)| format!("gerber: {}", e))?;
+
+    let mut walk = Walk::default();
+    for command in doc.commands() {
+        walk.command(&doc, command);
+    }
+    walk.finish();
+
+    if walk.segments.is_empty() {
+        return Err("no geometry found in gerber".to_string());
+    }
+
+    // Gerber coordinates are in the file's unit; the rest of the app works in millimetres.
+    if walk.unit == Unit::Inches {
+        for segment in &mut walk.segments {
+            segment.0 *= 25.4;
+            segment.1 *= 25.4;
+            segment.2 *= 25.4;
+            segment.3 *= 25.4;
+        }
+    }
+
+    Ok(walk.segments)
 }
 
-pub fn parse_gerber(path: &Path) -> Result<Vec<GerberPath>, String> {
-    let content = std::fs::read_to_string(path).map_err(|e| format!("read: {}", e))?;
-    let mut paths = Vec::new();
-    let mut current_path = Vec::new();
-    let mut cur_x = 0.0;
-    let mut cur_y = 0.0;
-    let mut in_region = false;
-    let mut scale = 1.0;
+/// A Gerber primitive, before it is turned into line segments.
+enum Primitive {
+    Segment {
+        start: (f64, f64),
+        end: (f64, f64),
+    },
+    Arc {
+        start: (f64, f64),
+        end: (f64, f64),
+        center: (f64, f64),
+        clockwise: bool,
+    },
+    Circle {
+        center: (f64, f64),
+        diameter: f64,
+    },
+    Rectangle {
+        center: (f64, f64),
+        width: f64,
+        height: f64,
+        rotation: f64,
+    },
+    Polygon(Vec<(f64, f64)>),
+    Complex(Vec<Primitive>),
+}
 
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with("G04") {
-            continue;
+/// Walks the commands of a document, keeping the modal state the format relies on.
+struct Walk {
+    position: (f64, f64),
+    aperture: i32,
+    interpolation: InterpolationMode,
+    region_mode: bool,
+    region_points: Vec<(f64, f64)>,
+    macros: HashMap<String, Vec<MacroContent>>,
+    unit: Unit,
+    segments: Vec<Segment>,
+}
+
+impl Default for Walk {
+    fn default() -> Self {
+        Self {
+            position: (0.0, 0.0),
+            aperture: 0,
+            interpolation: InterpolationMode::Linear,
+            region_mode: false,
+            region_points: Vec::new(),
+            macros: HashMap::new(),
+            unit: Unit::Millimeters,
+            segments: Vec::new(),
         }
+    }
+}
 
-        if line.starts_with("%FSLAX") {
-            if let Some(rest) = line.strip_prefix("%FSLAX") {
-                if let Some(comma_idx) = rest.find('Y') {
-                    let x_part = &rest[..comma_idx];
-                    let y_part = &rest[comma_idx + 1..];
-                    if x_part.ends_with('*') {
-                        continue;
+impl Walk {
+    fn command(&mut self, doc: &GerberDoc, command: &Command) {
+        match command {
+            Command::FunctionCode(FunctionCode::DCode(dcode)) => self.dcode(doc, dcode),
+            Command::FunctionCode(FunctionCode::GCode(gcode)) => self.gcode(gcode),
+            Command::FunctionCode(FunctionCode::MCode(MCode::EndOfFile)) => {}
+            Command::ExtendedCode(extended) => self.extended(extended),
+        }
+    }
+
+    fn dcode(&mut self, doc: &GerberDoc, dcode: &DCode) {
+        match dcode {
+            DCode::SelectAperture(id) => self.aperture = *id,
+            DCode::Operation(operation) => self.operation(doc, operation),
+        }
+    }
+
+    fn operation(&mut self, doc: &GerberDoc, operation: &Operation) {
+        match operation {
+            Operation::Interpolate(coordinates, offset) => {
+                let target = coordinates_to_position(coordinates, self.position);
+
+                match self.interpolation {
+                    InterpolationMode::Linear => {
+                        if self.region_mode {
+                            if self.region_points.is_empty() {
+                                self.region_points.push(self.position);
+                            }
+                            self.region_points.push(target);
+                        } else {
+                            self.push(Primitive::Segment {
+                                start: self.position,
+                                end: target,
+                            });
+                        }
                     }
-                    let x_digits = x_part.chars().filter(|c| c.is_digit(10)).count();
-                    let _ = x_digits;
-                    let _ = y_part;
+
+                    InterpolationMode::ClockwiseCircular
+                    | InterpolationMode::CounterclockwiseCircular => {
+                        if self.region_mode {
+                            log::warn!(
+                                "gerber: circular interpolation is not supported in region mode"
+                            );
+                        } else if let Some(offset) = offset {
+                            let center = offset_to_position(offset, self.position);
+                            self.push(Primitive::Arc {
+                                start: self.position,
+                                end: target,
+                                center,
+                                clockwise: self.interpolation
+                                    == InterpolationMode::ClockwiseCircular,
+                            });
+                        } else {
+                            log::warn!(
+                                "gerber: circular interpolation without an offset is not supported"
+                            );
+                        }
+                    }
+                }
+
+                self.position = target;
+            }
+
+            Operation::Move(coordinates) => {
+                self.position = coordinates_to_position(coordinates, self.position);
+                self.flush_region();
+            }
+
+            Operation::Flash(coordinates) => {
+                if !self.region_mode {
+                    let flash = coordinates_to_position(coordinates, self.position);
+                    if let Some(aperture) = doc.apertures.get(&self.aperture) {
+                        if let Some(primitive) =
+                            aperture_to_primitive(aperture, flash, &self.macros)
+                        {
+                            self.push(primitive);
+                        }
+                    }
+                    self.position = flash;
                 }
             }
         }
+    }
 
-        if line.starts_with("%MOMM") {
-            scale = 1.0;
-        } else if line.starts_with("%MOIN") {
-            scale = 25.4;
+    fn gcode(&mut self, gcode: &GCode) {
+        match gcode {
+            GCode::InterpolationMode(mode) => self.interpolation = *mode,
+            GCode::RegionMode(enabled) => {
+                self.region_mode = *enabled;
+                if !enabled {
+                    self.flush_region();
+                }
+            }
+            GCode::Unit(unit) => self.unit = *unit,
+            GCode::QuadrantMode(_) => {}
+            GCode::Comment(_) => {}
+            GCode::CoordinateMode(_) => {}
+            GCode::SelectAperture => {}
+        }
+    }
+
+    fn extended(&mut self, extended: &ExtendedCode) {
+        match extended {
+            ExtendedCode::Unit(unit) => self.unit = *unit,
+            ExtendedCode::ApertureMacro(mac) => {
+                self.macros.insert(mac.name.clone(), mac.content.clone());
+            }
+            _ => {}
+        }
+    }
+
+    /// Closes an open region (`G36`/`G37`) into a polygon.
+    fn flush_region(&mut self) {
+        if self.region_points.len() > 1 {
+            let points = std::mem::take(&mut self.region_points);
+            self.push(Primitive::Polygon(points));
+        }
+        self.region_points.clear();
+    }
+
+    fn push(&mut self, primitive: Primitive) {
+        flatten_primitive(&primitive, &mut self.segments);
+    }
+
+    fn finish(&mut self) {
+        self.flush_region();
+    }
+}
+
+/// Coordinates are modal: an omitted axis keeps its previous value.
+fn coordinates_to_position(coordinates: &Option<Coordinates>, current: (f64, f64)) -> (f64, f64) {
+    let mut result = current;
+
+    if let Some(coordinates) = coordinates {
+        if let Some(x) = coordinates.x {
+            result.0 = x.into();
+        }
+        if let Some(y) = coordinates.y {
+            result.1 = y.into();
+        }
+    }
+
+    result
+}
+
+/// Arc offsets are relative to the current point.
+fn offset_to_position(offset: &CoordinateOffset, current: (f64, f64)) -> (f64, f64) {
+    let mut result = current;
+
+    if let Some(x) = offset.x {
+        result.0 = x.into();
+    }
+    if let Some(y) = offset.y {
+        result.1 = y.into();
+    }
+
+    result
+}
+
+fn flatten_primitive(primitive: &Primitive, out: &mut Vec<Segment>) {
+    match primitive {
+        Primitive::Segment { start, end } => out.push((start.0, start.1, end.0, end.1)),
+
+        Primitive::Arc {
+            start,
+            end,
+            center,
+            clockwise,
+        } => flatten_arc(*start, *end, *center, *clockwise, out),
+
+        Primitive::Circle { center, diameter } => {
+            let radius = diameter / 2.0;
+            if radius <= 0.0 {
+                return;
+            }
+
+            let mut previous = (center.0 + radius, center.1);
+            for i in 1..=CIRCLE_STEPS {
+                let angle = i as f64 / CIRCLE_STEPS as f64 * std::f64::consts::TAU;
+                let point = (
+                    center.0 + angle.cos() * radius,
+                    center.1 + angle.sin() * radius,
+                );
+                out.push((previous.0, previous.1, point.0, point.1));
+                previous = point;
+            }
         }
 
-        if line == "G36*" {
-            in_region = true;
-            current_path.clear();
-            continue;
-        }
-        if line == "G37*" {
-            in_region = false;
-            if current_path.len() > 1 {
-                paths.push(GerberPath {
-                    points: current_path.clone(),
-                    closed: true,
+        Primitive::Rectangle {
+            center,
+            width,
+            height,
+            rotation,
+        } => {
+            let (half_w, half_h) = (width / 2.0, height / 2.0);
+            let (sin, cos) = rotation.to_radians().sin_cos();
+
+            let corners = [(-half_w, -half_h), (half_w, -half_h), (half_w, half_h), (-half_w, half_h)]
+                .map(|(x, y)| {
+                    (
+                        center.0 + x * cos - y * sin,
+                        center.1 + x * sin + y * cos,
+                    )
                 });
-            }
-            current_path.clear();
-            continue;
-        }
 
-        let mut cmd = line;
-        if let Some(pos) = cmd.find('*') {
-            cmd = &cmd[..pos];
-        }
-
-        let mut is_d01 = false;
-        let mut is_d02 = false;
-        let mut is_d03 = false;
-        let mut x = None;
-        let mut y = None;
-
-        let chars: Vec<char> = cmd.chars().collect();
-        let mut i = 0;
-        while i < chars.len() {
-            match chars[i] {
-                'X' => {
-                    let start = i + 1;
-                    let mut end = start;
-                    while end < chars.len()
-                        && (chars[end].is_digit(10) || chars[end] == '.' || chars[end] == '-')
-                    {
-                        end += 1;
-                    }
-                    if start < end {
-                        x = chars[start..end]
-                            .iter()
-                            .collect::<String>()
-                            .parse::<f64>()
-                            .ok();
-                    }
-                    i = end;
-                }
-                'Y' => {
-                    let start = i + 1;
-                    let mut end = start;
-                    while end < chars.len()
-                        && (chars[end].is_digit(10) || chars[end] == '.' || chars[end] == '-')
-                    {
-                        end += 1;
-                    }
-                    if start < end {
-                        y = chars[start..end]
-                            .iter()
-                            .collect::<String>()
-                            .parse::<f64>()
-                            .ok();
-                    }
-                    i = end;
-                }
-                'D' => {
-                    let start = i + 1;
-                    let mut end = start;
-                    while end < chars.len() && chars[end].is_digit(10) {
-                        end += 1;
-                    }
-                    if start < end {
-                        let d_val: u32 = chars[start..end]
-                            .iter()
-                            .collect::<String>()
-                            .parse()
-                            .unwrap_or(0);
-                        if d_val == 1 {
-                            is_d01 = true;
-                        }
-                        if d_val == 2 {
-                            is_d02 = true;
-                        }
-                        if d_val == 3 {
-                            is_d03 = true;
-                        }
-                    }
-                    i = end;
-                }
-                _ => {
-                    i += 1;
-                }
+            for i in 0..4 {
+                let a = corners[i];
+                let b = corners[(i + 1) % 4];
+                out.push((a.0, a.1, b.0, b.1));
             }
         }
 
-        let tx = x.unwrap_or(cur_x);
-        let ty = y.unwrap_or(cur_y);
-
-        if in_region {
-            if is_d02 {
-                if current_path.len() > 1 {
-                    paths.push(GerberPath {
-                        points: current_path.clone(),
-                        closed: true,
-                    });
-                }
-                current_path.clear();
-                current_path.push((tx * scale, ty * scale));
-            } else if is_d01 {
-                current_path.push((tx * scale, ty * scale));
+        Primitive::Polygon(points) => {
+            if points.len() < 2 {
+                return;
             }
-        } else {
-            if is_d01 {
-                if current_path.is_empty() {
-                    current_path.push((cur_x * scale, cur_y * scale));
-                }
-                current_path.push((tx * scale, ty * scale));
-            } else if is_d02 {
-                if current_path.len() > 1 {
-                    paths.push(GerberPath {
-                        points: current_path.clone(),
-                        closed: false,
-                    });
-                }
-                current_path.clear();
-            } else if is_d03 {
-                let cx = tx * scale;
-                let cy = ty * scale;
-                let r = 0.5;
-                let mut circle_pts = Vec::new();
-                for k in 0..16 {
-                    let a = k as f64 / 16.0 * std::f64::consts::TAU;
-                    circle_pts.push((cx + a.cos() * r, cy + a.sin() * r));
-                }
-                paths.push(GerberPath {
-                    points: circle_pts,
-                    closed: true,
-                });
+
+            for i in 0..points.len() {
+                let a = points[i];
+                let b = points[(i + 1) % points.len()];
+                out.push((a.0, a.1, b.0, b.1));
             }
         }
 
-        if is_d01 || is_d02 || is_d03 {
-            cur_x = tx;
-            cur_y = ty;
+        Primitive::Complex(parts) => {
+            for part in parts {
+                flatten_primitive(part, out);
+            }
+        }
+    }
+}
+
+fn flatten_arc(
+    start: (f64, f64),
+    end: (f64, f64),
+    center: (f64, f64),
+    clockwise: bool,
+    out: &mut Vec<Segment>,
+) {
+    let radius = ((start.0 - center.0).powi(2) + (start.1 - center.1).powi(2)).sqrt();
+    if radius <= 1e-12 {
+        out.push((start.0, start.1, end.0, end.1));
+        return;
+    }
+
+    let from = (start.1 - center.1).atan2(start.0 - center.0);
+    let to = (end.1 - center.1).atan2(end.0 - center.0);
+
+    let mut sweep = to - from;
+    if clockwise {
+        while sweep > 0.0 {
+            sweep -= std::f64::consts::TAU;
+        }
+        while sweep < -std::f64::consts::TAU {
+            sweep += std::f64::consts::TAU;
+        }
+    } else {
+        while sweep < 0.0 {
+            sweep += std::f64::consts::TAU;
+        }
+        while sweep > std::f64::consts::TAU {
+            sweep -= std::f64::consts::TAU;
         }
     }
 
-    if current_path.len() > 1 {
-        paths.push(GerberPath {
-            points: current_path,
-            closed: false,
-        });
+    let steps = ((sweep.abs() / std::f64::consts::TAU) * CIRCLE_STEPS as f64)
+        .ceil()
+        .max(1.0) as usize;
+
+    let mut previous = start;
+    for i in 1..=steps {
+        let angle = from + sweep * (i as f64 / steps as f64);
+        let point = (
+            center.0 + angle.cos() * radius,
+            center.1 + angle.sin() * radius,
+        );
+        out.push((previous.0, previous.1, point.0, point.1));
+        previous = point;
     }
 
-    if paths.is_empty() {
-        return Err("no paths found in gerber".to_string());
+    // Land exactly on the requested end point rather than on the last sampled angle.
+    if let Some(last) = out.last_mut() {
+        last.2 = end.0;
+        last.3 = end.1;
+    }
+}
+
+fn aperture_to_primitive(
+    aperture: &Aperture,
+    position: (f64, f64),
+    macros: &HashMap<String, Vec<MacroContent>>,
+) -> Option<Primitive> {
+    match aperture {
+        Aperture::Circle(circle) => Some(Primitive::Circle {
+            center: position,
+            diameter: circle.diameter,
+        }),
+
+        Aperture::Rectangle(rectangular) => Some(Primitive::Rectangle {
+            center: position,
+            width: rectangular.x,
+            height: rectangular.y,
+            rotation: 0.0,
+        }),
+
+        Aperture::Obround(rectangular) => {
+            let (width, height) = (rectangular.x, rectangular.y);
+
+            if (width - height).abs() < 1e-9 {
+                Some(Primitive::Circle {
+                    center: position,
+                    diameter: width,
+                })
+            } else if width > height {
+                let offset = (width - height) / 2.0;
+                Some(Primitive::Complex(vec![
+                    Primitive::Segment {
+                        start: (position.0 - offset, position.1),
+                        end: (position.0 + offset, position.1),
+                    },
+                    Primitive::Circle {
+                        center: (position.0 - offset, position.1),
+                        diameter: height,
+                    },
+                    Primitive::Circle {
+                        center: (position.0 + offset, position.1),
+                        diameter: height,
+                    },
+                ]))
+            } else {
+                let offset = (height - width) / 2.0;
+                Some(Primitive::Complex(vec![
+                    Primitive::Segment {
+                        start: (position.0, position.1 - offset),
+                        end: (position.0, position.1 + offset),
+                    },
+                    Primitive::Circle {
+                        center: (position.0, position.1 - offset),
+                        diameter: width,
+                    },
+                    Primitive::Circle {
+                        center: (position.0, position.1 + offset),
+                        diameter: width,
+                    },
+                ]))
+            }
+        }
+
+        Aperture::Polygon(polygon) => {
+            let radius = polygon.diameter / 2.0;
+            let vertices = (polygon.vertices.max(3)) as usize;
+            let rotation = polygon.rotation.unwrap_or(0.0).to_radians();
+
+            let mut points = Vec::with_capacity(vertices);
+            for i in 0..vertices {
+                let angle = rotation + i as f64 / vertices as f64 * std::f64::consts::TAU;
+                points.push((
+                    position.0 + angle.cos() * radius,
+                    position.1 + angle.sin() * radius,
+                ));
+            }
+
+            Some(Primitive::Polygon(points))
+        }
+
+        Aperture::Macro(name, data) => {
+            let content = macros.get(name)?;
+            let context = macro_context(data);
+
+            let mut parts = Vec::new();
+            for element in content {
+                if let Some(part) = macro_element_to_primitive(element, &context, position) {
+                    parts.push(part);
+                }
+            }
+
+            Some(Primitive::Complex(parts))
+        }
+    }
+}
+
+/// Binds the aperture's parameters to `$1`, `$2`, ... so macro expressions can be evaluated.
+fn macro_context(data: &Option<Vec<MacroDecimal>>) -> HashMapContext {
+    let mut context = HashMapContext::new();
+
+    if let Some(data) = data {
+        for (index, element) in data.iter().enumerate() {
+            if let MacroDecimal::Value(value) = element {
+                let _ = context.set_value(format!("${}", index + 1), Value::Float(*value));
+            }
+        }
     }
 
-    Ok(paths)
+    context
+}
+
+fn resolve_macro_decimal(value: &MacroDecimal, context: &HashMapContext) -> f64 {
+    match value {
+        MacroDecimal::Value(value) => *value,
+        MacroDecimal::Variable(name) => context
+            .get_value(&format!("${}", name))
+            .and_then(|value| value.as_number().ok())
+            .unwrap_or(f64::NAN),
+        MacroDecimal::Expression(expression) => {
+            eval_float_with_context(expression, context).unwrap_or(f64::NAN)
+        }
+    }
+}
+
+fn resolve_macro_integer(value: &MacroInteger, context: &HashMapContext) -> u32 {
+    let resolved = match value {
+        MacroInteger::Value(value) => *value as f64,
+        MacroInteger::Variable(name) => context
+            .get_value(&format!("${}", name))
+            .and_then(|value| value.as_number().ok())
+            .unwrap_or(f64::NAN),
+        MacroInteger::Expression(expression) => {
+            eval_float_with_context(expression, context).unwrap_or(f64::NAN)
+        }
+    };
+
+    if resolved.is_finite() {
+        resolved.round().max(3.0) as u32
+    } else {
+        3
+    }
+}
+
+fn macro_pair(pair: &(MacroDecimal, MacroDecimal), context: &HashMapContext) -> (f64, f64) {
+    (
+        resolve_macro_decimal(&pair.0, context),
+        resolve_macro_decimal(&pair.1, context),
+    )
+}
+
+fn macro_element_to_primitive(
+    element: &MacroContent,
+    context: &HashMapContext,
+    position: (f64, f64),
+) -> Option<Primitive> {
+    match element {
+        MacroContent::Circle(circle) => {
+            let center = macro_pair(&circle.center, context);
+            Some(Primitive::Circle {
+                center: (position.0 + center.0, position.1 + center.1),
+                diameter: resolve_macro_decimal(&circle.diameter, context),
+            })
+        }
+
+        MacroContent::VectorLine(line) => {
+            let start = macro_pair(&line.start, context);
+            let end = macro_pair(&line.end, context);
+            let (dx, dy) = (end.0 - start.0, end.1 - start.1);
+            let length = dx.hypot(dy);
+
+            if length <= 0.0 {
+                return None;
+            }
+
+            let half = resolve_macro_decimal(&line.width, context) / 2.0;
+            let (nx, ny) = (-dy / length * half, dx / length * half);
+
+            Some(Primitive::Polygon(vec![
+                (position.0 + start.0 + nx, position.1 + start.1 + ny),
+                (position.0 + start.0 - nx, position.1 + start.1 - ny),
+                (position.0 + end.0 - nx, position.1 + end.1 - ny),
+                (position.0 + end.0 + nx, position.1 + end.1 + ny),
+            ]))
+        }
+
+        MacroContent::CenterLine(line) => {
+            let center = macro_pair(&line.center, context);
+            let size = macro_pair(&line.dimensions, context);
+
+            Some(Primitive::Rectangle {
+                center: (position.0 + center.0, position.1 + center.1),
+                width: size.0,
+                height: size.1,
+                rotation: resolve_macro_decimal(&line.angle, context),
+            })
+        }
+
+        MacroContent::Outline(outline) => {
+            let points = outline
+                .points
+                .iter()
+                .map(|point| {
+                    let point = macro_pair(point, context);
+                    (position.0 + point.0, position.1 + point.1)
+                })
+                .collect();
+
+            Some(Primitive::Polygon(points))
+        }
+
+        MacroContent::Polygon(polygon) => {
+            let vertices = resolve_macro_integer(&polygon.vertices, context).max(3) as usize;
+            let radius = resolve_macro_decimal(&polygon.diameter, context) / 2.0;
+            let center = macro_pair(&polygon.center, context);
+            let rotation = resolve_macro_decimal(&polygon.angle, context).to_radians();
+
+            let mut points = Vec::with_capacity(vertices);
+            for i in 0..vertices {
+                let angle = rotation + i as f64 / vertices as f64 * std::f64::consts::TAU;
+                points.push((
+                    position.0 + center.0 + angle.cos() * radius,
+                    position.1 + center.1 + angle.sin() * radius,
+                ));
+            }
+
+            Some(Primitive::Polygon(points))
+        }
+
+        // Moire and thermal primitives are decorative; skipping them keeps the rest of the
+        // image intact instead of failing the whole import.
+        MacroContent::Moire(_) | MacroContent::Thermal(_) => None,
+        MacroContent::VariableDefinition(_) | MacroContent::Comment(_) => None,
+    }
 }

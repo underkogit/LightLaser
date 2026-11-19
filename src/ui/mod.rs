@@ -266,9 +266,15 @@ impl eframe::App for LaserApp {
                     self.add_svg_from_path(&path);
                     self.center_view();
                 }
-                "nc" | "gcode" | "gbr" | "txt" => {
+                "nc" | "gcode" | "txt" => {
                     log::info!("Dropped gcode: {}", path.display());
                     self.add_gcode_from_path(&path);
+                    self.center_view();
+                }
+                "gbr" | "ger" | "gerber" | "gtl" | "gbl" | "gts" | "gbs" | "gto" | "gbo"
+                | "gko" | "gm1" => {
+                    log::info!("Dropped gerber: {}", path.display());
+                    self.add_gerber_from_path(&path);
                     self.center_view();
                 }
                 "toml" => {
