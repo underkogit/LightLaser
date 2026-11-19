@@ -1,14 +1,21 @@
 //! Gerber (RS-274X) import.
 //!
-//! A Gerber document is flattened into plain line segments in millimetres - the same
-//! representation the G-code layers use - so rendering, caching, previewing and exporting
-//! all work without knowing anything about Gerber.
+//! A Gerber layer is a set of *areas*, not a set of lines: a trace is an aperture-wide
+//! stroke, a pad is a filled shape, and a region is a filled polygon. Drawing each of those
+//! as its own outline produces a wireframe in which every overlapping pad and trace adds
+//! visible edges.
+//!
+//! So the document is first turned into filled contours, those contours are merged with a
+//! boolean union, and only the resulting outline of the copper is handed on as line
+//! segments. That keeps the layer compatible with the existing segment based rendering,
+//! caching, preview and export paths while showing only the real edges of the copper.
 
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
+use clipper2::{EndType, FillRule, JoinType, Milli};
 use evalexpr::{
     Context, ContextWithMutableVariables, HashMapContext, Value, eval_float_with_context,
 };
@@ -18,13 +25,27 @@ use gerber_parser::gerber_types::{
     InterpolationMode, MacroContent, MacroDecimal, MacroInteger, MCode, Operation, Unit,
 };
 
+/// clipper2 stores coordinates as integers, so a scaler has to be picked. `Milli` keeps a
+/// micrometre of precision, which fits the rest of the app working in millimetres.
+///
+/// Fully qualified because `Path` is already taken by `std::path::Path` in this module.
+type ClipPaths = clipper2::Paths<Milli>;
+type ClipPath = clipper2::Path<Milli>;
+
 /// A line segment in millimetres: `(x0, y0, x1, y1)`.
 pub type Segment = (f64, f64, f64, f64);
 
-/// Straight pieces used to approximate a full circle.
-const CIRCLE_STEPS: usize = 48;
+/// Straight pieces used to approximate a full circle or a full arc sweep.
+const ARC_STEPS: usize = 64;
 
-/// Reads a Gerber file and flattens it into line segments in millimetres.
+/// Half width used when a stroke has no usable aperture, so it still comes out as a line.
+const FALLBACK_HALF_WIDTH: f64 = 0.05;
+
+/// Tolerance passed to clipper2's path simplification, in millimetres.
+const SIMPLIFY_EPSILON: f64 = 0.01;
+
+/// Reads a Gerber file and returns the outline of its copper as line segments in
+/// millimetres.
 pub fn parse_gerber_segments(path: &Path) -> Result<Vec<Segment>, String> {
     let file = File::open(path).map_err(|e| format!("open {}: {}", path.display(), e))?;
     let doc = gerber_parser::parse(BufReader::new(file))
@@ -36,34 +57,47 @@ pub fn parse_gerber_segments(path: &Path) -> Result<Vec<Segment>, String> {
     }
     walk.finish();
 
-    if walk.segments.is_empty() {
+    if walk.primitives.is_empty() {
         return Err("no geometry found in gerber".to_string());
     }
 
-    // Gerber coordinates are in the file's unit; the rest of the app works in millimetres.
+    // Everything downstream works in millimetres, and so do the tolerances above.
     if walk.unit == Unit::Inches {
-        for segment in &mut walk.segments {
-            segment.0 *= 25.4;
-            segment.1 *= 25.4;
-            segment.2 *= 25.4;
-            segment.3 *= 25.4;
+        for primitive in &mut walk.primitives {
+            scale_primitive(primitive, 25.4);
         }
     }
 
-    Ok(walk.segments)
+    // Turn every primitive into a filled area, then merge them all. Overlapping strokes and
+    // pads stop contributing their own edges and only the outer boundary survives.
+    let mut paths = ClipPaths::new(Vec::new());
+    for primitive in &walk.primitives {
+        paths.append(primitive_to_paths(primitive));
+    }
+
+    let merged = union_paths(paths);
+    let segments = paths_to_segments(&merged);
+
+    if segments.is_empty() {
+        return Err("no geometry found in gerber".to_string());
+    }
+
+    Ok(segments)
 }
 
-/// A Gerber primitive, before it is turned into line segments.
+/// A Gerber primitive, kept in its own terms until it is turned into an area.
 enum Primitive {
     Segment {
         start: (f64, f64),
         end: (f64, f64),
+        width: f64,
     },
     Arc {
         start: (f64, f64),
         end: (f64, f64),
         center: (f64, f64),
         clockwise: bool,
+        width: f64,
     },
     Circle {
         center: (f64, f64),
@@ -88,7 +122,7 @@ struct Walk {
     region_points: Vec<(f64, f64)>,
     macros: HashMap<String, Vec<MacroContent>>,
     unit: Unit,
-    segments: Vec<Segment>,
+    primitives: Vec<Primitive>,
 }
 
 impl Default for Walk {
@@ -101,7 +135,7 @@ impl Default for Walk {
             region_points: Vec::new(),
             macros: HashMap::new(),
             unit: Unit::Millimeters,
-            segments: Vec::new(),
+            primitives: Vec::new(),
         }
     }
 }
@@ -136,9 +170,11 @@ impl Walk {
                             }
                             self.region_points.push(target);
                         } else {
-                            self.push(Primitive::Segment {
+                            let width = self.aperture_width(doc);
+                            self.primitives.push(Primitive::Segment {
                                 start: self.position,
                                 end: target,
+                                width,
                             });
                         }
                     }
@@ -151,12 +187,14 @@ impl Walk {
                             );
                         } else if let Some(offset) = offset {
                             let center = offset_to_position(offset, self.position);
-                            self.push(Primitive::Arc {
+                            let width = self.aperture_width(doc);
+                            self.primitives.push(Primitive::Arc {
                                 start: self.position,
                                 end: target,
                                 center,
                                 clockwise: self.interpolation
                                     == InterpolationMode::ClockwiseCircular,
+                                width,
                             });
                         } else {
                             log::warn!(
@@ -181,7 +219,7 @@ impl Walk {
                         if let Some(primitive) =
                             aperture_to_primitive(aperture, flash, &self.macros)
                         {
-                            self.push(primitive);
+                            self.primitives.push(primitive);
                         }
                     }
                     self.position = flash;
@@ -217,17 +255,21 @@ impl Walk {
         }
     }
 
-    /// Closes an open region (`G36`/`G37`) into a polygon.
-    fn flush_region(&mut self) {
-        if self.region_points.len() > 1 {
-            let points = std::mem::take(&mut self.region_points);
-            self.push(Primitive::Polygon(points));
-        }
-        self.region_points.clear();
+    /// Width of the currently selected aperture, which is what turns a stroke into an area.
+    fn aperture_width(&self, doc: &GerberDoc) -> f64 {
+        doc.apertures
+            .get(&self.aperture)
+            .map(aperture_stroke_width)
+            .unwrap_or(0.0)
     }
 
-    fn push(&mut self, primitive: Primitive) {
-        flatten_primitive(&primitive, &mut self.segments);
+    /// Closes an open region (`G36`/`G37`) into a polygon.
+    fn flush_region(&mut self) {
+        if self.region_points.len() > 2 {
+            let points = std::mem::take(&mut self.region_points);
+            self.primitives.push(Primitive::Polygon(points));
+        }
+        self.region_points.clear();
     }
 
     fn finish(&mut self) {
@@ -265,33 +307,115 @@ fn offset_to_position(offset: &CoordinateOffset, current: (f64, f64)) -> (f64, f
     result
 }
 
-fn flatten_primitive(primitive: &Primitive, out: &mut Vec<Segment>) {
+fn aperture_stroke_width(aperture: &Aperture) -> f64 {
+    match aperture {
+        Aperture::Circle(circle) => circle.diameter,
+        Aperture::Rectangle(rectangular) => rectangular.x.max(rectangular.y),
+        Aperture::Obround(rectangular) => rectangular.x.max(rectangular.y),
+        Aperture::Polygon(polygon) => polygon.diameter,
+        Aperture::Macro(..) => 0.0,
+    }
+}
+
+fn scale_primitive(primitive: &mut Primitive, factor: f64) {
     match primitive {
-        Primitive::Segment { start, end } => out.push((start.0, start.1, end.0, end.1)),
+        Primitive::Segment {
+            start,
+            end,
+            width,
+        } => {
+            start.0 *= factor;
+            start.1 *= factor;
+            end.0 *= factor;
+            end.1 *= factor;
+            *width *= factor;
+        }
+
+        Primitive::Arc {
+            start,
+            end,
+            center,
+            width,
+            ..
+        } => {
+            start.0 *= factor;
+            start.1 *= factor;
+            end.0 *= factor;
+            end.1 *= factor;
+            center.0 *= factor;
+            center.1 *= factor;
+            *width *= factor;
+        }
+
+        Primitive::Circle { center, diameter } => {
+            center.0 *= factor;
+            center.1 *= factor;
+            *diameter *= factor;
+        }
+
+        Primitive::Rectangle {
+            center,
+            width,
+            height,
+            ..
+        } => {
+            center.0 *= factor;
+            center.1 *= factor;
+            *width *= factor;
+            *height *= factor;
+        }
+
+        Primitive::Polygon(points) => {
+            for point in points {
+                point.0 *= factor;
+                point.1 *= factor;
+            }
+        }
+
+        Primitive::Complex(parts) => {
+            for part in parts {
+                scale_primitive(part, factor);
+            }
+        }
+    }
+}
+
+/// Converts one primitive into the filled contour(s) it covers.
+fn primitive_to_paths(primitive: &Primitive) -> ClipPaths {
+    match primitive {
+        Primitive::Segment {
+            start,
+            end,
+            width,
+        } => stroke_to_paths(&[*start, *end], *width),
 
         Primitive::Arc {
             start,
             end,
             center,
             clockwise,
-        } => flatten_arc(*start, *end, *center, *clockwise, out),
+            width,
+        } => {
+            let points = tessellate_arc(*start, *end, *center, *clockwise);
+            stroke_to_paths(&points, *width)
+        }
 
         Primitive::Circle { center, diameter } => {
             let radius = diameter / 2.0;
             if radius <= 0.0 {
-                return;
+                return ClipPaths::new(Vec::new());
             }
 
-            let mut previous = (center.0 + radius, center.1);
-            for i in 1..=CIRCLE_STEPS {
-                let angle = i as f64 / CIRCLE_STEPS as f64 * std::f64::consts::TAU;
-                let point = (
+            let mut points = Vec::with_capacity(ARC_STEPS);
+            for i in 0..ARC_STEPS {
+                let angle = i as f64 / ARC_STEPS as f64 * std::f64::consts::TAU;
+                points.push((
                     center.0 + angle.cos() * radius,
                     center.1 + angle.sin() * radius,
-                );
-                out.push((previous.0, previous.1, point.0, point.1));
-                previous = point;
+                ));
             }
+
+            points.into()
         }
 
         Primitive::Rectangle {
@@ -303,52 +427,96 @@ fn flatten_primitive(primitive: &Primitive, out: &mut Vec<Segment>) {
             let (half_w, half_h) = (width / 2.0, height / 2.0);
             let (sin, cos) = rotation.to_radians().sin_cos();
 
-            let corners = [(-half_w, -half_h), (half_w, -half_h), (half_w, half_h), (-half_w, half_h)]
-                .map(|(x, y)| {
-                    (
-                        center.0 + x * cos - y * sin,
-                        center.1 + x * sin + y * cos,
-                    )
-                });
+            let corners: Vec<(f64, f64)> =
+                [(-half_w, -half_h), (half_w, -half_h), (half_w, half_h), (-half_w, half_h)]
+                    .iter()
+                    .map(|(x, y)| {
+                        (
+                            center.0 + x * cos - y * sin,
+                            center.1 + x * sin + y * cos,
+                        )
+                    })
+                    .collect();
 
-            for i in 0..4 {
-                let a = corners[i];
-                let b = corners[(i + 1) % 4];
-                out.push((a.0, a.1, b.0, b.1));
-            }
+            corners.into()
         }
 
         Primitive::Polygon(points) => {
-            if points.len() < 2 {
-                return;
+            if points.len() < 3 {
+                return ClipPaths::new(Vec::new());
             }
-
-            for i in 0..points.len() {
-                let a = points[i];
-                let b = points[(i + 1) % points.len()];
-                out.push((a.0, a.1, b.0, b.1));
-            }
+            points.to_vec().into()
         }
 
         Primitive::Complex(parts) => {
+            let mut paths = ClipPaths::new(Vec::new());
             for part in parts {
-                flatten_primitive(part, out);
+                paths.append(primitive_to_paths(part));
             }
+            union_paths(paths)
         }
     }
 }
 
-fn flatten_arc(
+/// Inflates a polyline by half the aperture width, which is what turns a stroke into the
+/// area the laser actually has to clear.
+fn stroke_to_paths(points: &[(f64, f64)], width: f64) -> ClipPaths {
+    if points.len() < 2 {
+        return ClipPaths::new(Vec::new());
+    }
+
+    let half = if width > 0.0 {
+        width / 2.0
+    } else {
+        FALLBACK_HALF_WIDTH
+    };
+
+    let path: ClipPath = points.to_vec().into();
+
+    path.inflate(half, JoinType::Round, EndType::Round, 2.0)
+        .simplify(SIMPLIFY_EPSILON, false)
+}
+
+fn union_paths(paths: ClipPaths) -> ClipPaths {
+    // NonZero rather than EvenOdd: overlapping copper has to merge, not cancel out.
+    clipper2::union::<Milli>(paths, ClipPaths::new(Vec::new()), FillRule::NonZero)
+        .unwrap_or_else(|_| ClipPaths::new(Vec::new()))
+}
+
+/// Emits every contour of the merged areas as a closed run of line segments.
+fn paths_to_segments(paths: &ClipPaths) -> Vec<Segment> {
+    let mut out = Vec::new();
+
+    for path in paths.iter() {
+        let points: Vec<(f64, f64)> = path.iter().map(|point| (point.x(), point.y())).collect();
+        if points.len() < 2 {
+            continue;
+        }
+
+        for i in 0..points.len() {
+            let a = points[i];
+            let b = points[(i + 1) % points.len()];
+
+            if (a.0 - b.0).abs() < 1e-12 && (a.1 - b.1).abs() < 1e-12 {
+                continue;
+            }
+
+            out.push((a.0, a.1, b.0, b.1));
+        }
+    }
+
+    out
+}
+
+fn tessellate_arc(
     start: (f64, f64),
     end: (f64, f64),
     center: (f64, f64),
     clockwise: bool,
-    out: &mut Vec<Segment>,
-) {
+) -> Vec<(f64, f64)> {
     let radius = ((start.0 - center.0).powi(2) + (start.1 - center.1).powi(2)).sqrt();
     if radius <= 1e-12 {
-        out.push((start.0, start.1, end.0, end.1));
-        return;
+        return vec![start, end];
     }
 
     let from = (start.1 - center.1).atan2(start.0 - center.0);
@@ -371,26 +539,23 @@ fn flatten_arc(
         }
     }
 
-    let steps = ((sweep.abs() / std::f64::consts::TAU) * CIRCLE_STEPS as f64)
+    let steps = ((sweep.abs() / std::f64::consts::TAU) * ARC_STEPS as f64)
         .ceil()
         .max(1.0) as usize;
 
-    let mut previous = start;
-    for i in 1..=steps {
+    let mut points = Vec::with_capacity(steps + 1);
+    points.push(start);
+
+    for i in 1..steps {
         let angle = from + sweep * (i as f64 / steps as f64);
-        let point = (
+        points.push((
             center.0 + angle.cos() * radius,
             center.1 + angle.sin() * radius,
-        );
-        out.push((previous.0, previous.1, point.0, point.1));
-        previous = point;
+        ));
     }
 
-    // Land exactly on the requested end point rather than on the last sampled angle.
-    if let Some(last) = out.last_mut() {
-        last.2 = end.0;
-        last.3 = end.1;
-    }
+    points.push(end);
+    points
 }
 
 fn aperture_to_primitive(
@@ -411,6 +576,8 @@ fn aperture_to_primitive(
             rotation: 0.0,
         }),
 
+        // An obround is exactly a stroke of the short side's width with round caps, so the
+        // caps do not need to be added separately.
         Aperture::Obround(rectangular) => {
             let (width, height) = (rectangular.x, rectangular.y);
 
@@ -421,42 +588,24 @@ fn aperture_to_primitive(
                 })
             } else if width > height {
                 let offset = (width - height) / 2.0;
-                Some(Primitive::Complex(vec![
-                    Primitive::Segment {
-                        start: (position.0 - offset, position.1),
-                        end: (position.0 + offset, position.1),
-                    },
-                    Primitive::Circle {
-                        center: (position.0 - offset, position.1),
-                        diameter: height,
-                    },
-                    Primitive::Circle {
-                        center: (position.0 + offset, position.1),
-                        diameter: height,
-                    },
-                ]))
+                Some(Primitive::Segment {
+                    start: (position.0 - offset, position.1),
+                    end: (position.0 + offset, position.1),
+                    width: height,
+                })
             } else {
                 let offset = (height - width) / 2.0;
-                Some(Primitive::Complex(vec![
-                    Primitive::Segment {
-                        start: (position.0, position.1 - offset),
-                        end: (position.0, position.1 + offset),
-                    },
-                    Primitive::Circle {
-                        center: (position.0, position.1 - offset),
-                        diameter: width,
-                    },
-                    Primitive::Circle {
-                        center: (position.0, position.1 + offset),
-                        diameter: width,
-                    },
-                ]))
+                Some(Primitive::Segment {
+                    start: (position.0, position.1 - offset),
+                    end: (position.0, position.1 + offset),
+                    width,
+                })
             }
         }
 
         Aperture::Polygon(polygon) => {
             let radius = polygon.diameter / 2.0;
-            let vertices = (polygon.vertices.max(3)) as usize;
+            let vertices = polygon.vertices.max(3) as usize;
             let rotation = polygon.rotation.unwrap_or(0.0).to_radians();
 
             let mut points = Vec::with_capacity(vertices);

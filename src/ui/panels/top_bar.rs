@@ -76,6 +76,11 @@ impl LaserApp {
                 ui.close();
             }
             ui.separator();
+            if ui.button(t!("ui.menu.settings")).clicked() {
+                self.open_settings();
+                ui.close();
+            }
+            ui.separator();
             if ui.button(t!("ui.menu.exit")).clicked() {
                 ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
             }
@@ -153,6 +158,8 @@ impl LaserApp {
                 &mut self.app_config.show_work_area,
                 t!("ui.menu.show_work_area"),
             );
+            ui.separator();
+            ui.checkbox(&mut self.console_open, t!("ui.menu.console"));
             ui.separator();
             // Snapping is always on at a fixed step, so this is a status line, not a control.
             ui.label(format!(

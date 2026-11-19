@@ -1,7 +1,9 @@
 pub mod canvas;
 pub mod connection;
+pub mod console_window;
 pub mod export_dialog;
 pub mod gcode_window;
 pub mod job;
 pub mod preview_window;
+pub mod settings_window;
 pub mod status_bar;

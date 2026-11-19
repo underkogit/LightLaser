@@ -11,7 +11,7 @@ use crate::logger::LogEntry;
 use crate::ui::{
     app_config::AppConfig, history::History, panels::canvas::CanvasState,
     panels::right_panel::RightPanelState, selection::Selection, tools_state::ToolsState,
-    widget::status_bar::StatusBar,
+    widget::settings_window::SettingsTab, widget::status_bar::StatusBar,
 };
 
 pub mod app_config;
@@ -56,6 +56,9 @@ pub struct LaserApp {
 
     pub(crate) connection_dialog_open: bool,
     pub(crate) export_dialog_open: bool,
+    pub(crate) settings_open: bool,
+    pub(crate) settings_tab: SettingsTab,
+    pub(crate) console_open: bool,
 
     pub(crate) clipboard: Option<Vec<crate::core::layer::Layer>>,
 }
@@ -90,6 +93,9 @@ impl LaserApp {
             config_folder,
             connection_dialog_open: false,
             export_dialog_open: false,
+            settings_open: false,
+            settings_tab: SettingsTab::default(),
+            console_open: false,
             clipboard: None,
         }
     }
@@ -163,6 +169,10 @@ impl LaserApp {
 impl eframe::App for LaserApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.drain_grbl_events();
+
+        // Applied every frame; egui only reacts when the value actually changes.
+        ui.ctx()
+            .set_zoom_factor(self.app_config.ui_scale.clamp(0.5, 2.0));
 
         let screen_rect = ui.ctx().viewport_rect();
         self.app_config.window_width = screen_rect.width();
@@ -319,6 +329,8 @@ impl eframe::App for LaserApp {
         self.ui_export_dialog(ui.ctx());
         self.ui_preview_window(ui.ctx());
         self.ui_gcode_window(ui.ctx());
+        self.ui_settings_window(ui.ctx());
+        self.ui_console_window(ui.ctx());
     }
 
     fn on_exit(&mut self) {

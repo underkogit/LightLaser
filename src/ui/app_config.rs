@@ -40,6 +40,12 @@ pub struct AppConfig {
 
     #[serde(default = "default_true")]
     pub show_work_area: bool,
+
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: f32,
+
+    #[serde(default = "default_console_font_size")]
+    pub console_font_size: f32,
 }
 
 impl AppConfig {
@@ -82,6 +88,8 @@ impl Default for AppConfig {
             show_axes: true,
             grid_step_mm: default_grid_step(),
             show_work_area: true,
+            ui_scale: default_ui_scale(),
+            console_font_size: default_console_font_size(),
         }
     }
 }
@@ -108,6 +116,14 @@ fn default_true() -> bool {
 
 fn default_grid_step() -> f64 {
     5.0
+}
+
+fn default_ui_scale() -> f32 {
+    1.0
+}
+
+fn default_console_font_size() -> f32 {
+    12.0
 }
 
 pub const GRID_STEPS: &[f64] = &[1.0, 2.5, 5.0, 10.0, 25.0];

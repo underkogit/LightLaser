@@ -35,6 +35,17 @@ impl LayerSource {
             LayerSource::Vector => "vector",
         }
     }
+
+    /// Human readable name of the source kind, used by the canvas label.
+    pub fn display_label(&self) -> &'static str {
+        match self {
+            LayerSource::Image { .. } => "Image",
+            LayerSource::Svg { .. } => "SVG",
+            LayerSource::Gcode { .. } => "GCode",
+            LayerSource::Gerber { .. } => "Gerber",
+            LayerSource::Vector => "Vector",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

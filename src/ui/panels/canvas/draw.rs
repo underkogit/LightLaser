@@ -176,6 +176,11 @@ fn selection_bounds(app: &LaserApp) -> Option<(f64, f64, f64, f64)> {
     }
 }
 
+/// Label drawn on top of a layer: its name plus the kind of source it came from.
+fn source_label(layer: &Layer) -> String {
+    format!("Source: {} ({})", layer.name, layer.source.display_label())
+}
+
 pub fn render_layers(
     ui: &mut egui::Ui,
     painter: &Painter,
@@ -517,7 +522,7 @@ fn draw_layer(
         painter.text(
             egui::pos2(rect.min.x + 4.0, rect.min.y + 4.0),
             egui::Align2::LEFT_TOP,
-            &layer.name,
+            source_label(layer),
             egui::FontId::proportional(11.0),
             Color32::WHITE,
         );
@@ -608,7 +613,7 @@ fn draw_vector_layer(
             painter.text(
                 egui::pos2(rect.min.x + 4.0, rect.min.y + 4.0),
                 egui::Align2::LEFT_TOP,
-                &layer.name,
+                source_label(layer),
                 egui::FontId::proportional(11.0),
                 Color32::WHITE,
             );
