@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 
+use crate::core::image::SvgImportProfile;
+
 #[derive(Default, Debug, Serialize, Deserialize, PartialEq, Clone, Copy)]
 pub enum AppTheme {
     Slate,
@@ -50,6 +52,10 @@ pub struct AppConfig {
     /// Path to a font file used for the whole interface; `None` keeps the built-in font.
     #[serde(default)]
     pub ui_font: Option<String>,
+
+    /// How imported SVG files are measured; drag and drop and the import menu both follow it.
+    #[serde(default)]
+    pub svg_import_profile: SvgImportProfile,
 }
 
 impl AppConfig {
@@ -95,6 +101,7 @@ impl Default for AppConfig {
             ui_scale: default_ui_scale(),
             console_font_size: default_console_font_size(),
             ui_font: None,
+            svg_import_profile: SvgImportProfile::default(),
         }
     }
 }

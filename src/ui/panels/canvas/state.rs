@@ -154,6 +154,10 @@ pub struct CanvasState {
     pub pending_center: bool,
     pub hovered_layer: Option<usize>,
     pub drag: DragMode,
+    /// Layer whose additive (Shift) selection toggle is waiting to be confirmed as a click.
+    /// Shift is also the "move without snapping" modifier, so the toggle is only applied when
+    /// the press ends without becoming a drag.
+    pub pending_toggle: Option<usize>,
     pub texture_cache: HashMap<String, egui::TextureHandle>,
     pub segment_cache: HashMap<String, SegmentCacheEntry>,
     pub preview_window: PreviewWindow,
@@ -184,6 +188,7 @@ impl Default for CanvasState {
             pending_center: false,
             hovered_layer: None,
             drag: DragMode::None,
+            pending_toggle: None,
             texture_cache: HashMap::new(),
             segment_cache: HashMap::new(),
             preview_window: PreviewWindow::default(),

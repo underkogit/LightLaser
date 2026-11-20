@@ -2,7 +2,8 @@ use std::path::Path;
 
 use crate::core::gcode::{normalize_gcode, parse_gcode_file_segments, transform_for_layer};
 use crate::core::image::{
-    RasterizeOptions, engrave_segments, load_image, rasterize, rasterize_svg, svg_trace,
+    RasterizeOptions, engrave_segments, load_image, rasterize, rasterize_svg_into_box,
+    svg_raster_box, svg_trace,
 };
 use crate::core::layer::{EngraveMode, Layer, LayerSource};
 
@@ -98,6 +99,10 @@ fn build_segments(layer: &Layer) -> Vec<(f64, f64, f64, f64)> {
         .bounds()
         .map(|b| (b.2 - b.0).max(1.0))
         .unwrap_or(100.0);
+    let height_mm = layer
+        .bounds()
+        .map(|b| (b.3 - b.1).max(1.0))
+        .unwrap_or(100.0);
 
     match &layer.source {
         LayerSource::Image { path } => {
@@ -152,11 +157,12 @@ fn build_segments(layer: &Layer) -> Vec<(f64, f64, f64, f64)> {
                 let target_px = (layer.params.pixels_per_mm * width_mm)
                     .round()
                     .clamp(64.0, 4096.0) as u32;
-                let Ok(svg) = rasterize_svg(Path::new(path), target_px) else {
+                let (box_w, box_h) = svg_raster_box(width_mm, height_mm, target_px);
+                let Ok(image) = rasterize_svg_into_box(Path::new(path), box_w, box_h) else {
                     return Vec::new();
                 };
                 let raster = rasterize(
-                    &svg.image,
+                    &image,
                     RasterizeOptions {
                         pixels_per_mm: layer.params.pixels_per_mm,
                         threshold: layer.params.threshold,

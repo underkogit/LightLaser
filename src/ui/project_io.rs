@@ -2,6 +2,7 @@ use std::path::Path;
 
 use rust_i18n::t;
 
+use crate::core::image::{SvgImportProfile, svg_size_mm};
 use crate::core::layer::{Layer, LayerSource};
 use crate::ui::LaserApp;
 
@@ -104,14 +105,67 @@ impl LaserApp {
     }
 
     pub(crate) fn add_svg_interactive(&mut self) {
+        let profile = self.app_config.svg_import_profile;
+        self.add_svg_interactive_with_profile(profile);
+    }
+
+    /// Asks for an SVG file and imports it with the given profile.
+    ///
+    /// The import menu uses this for explicit profiles such as the PCB one; drag and drop uses
+    /// the profile configured in the settings window.
+    pub(crate) fn add_svg_interactive_with_profile(&mut self, profile: SvgImportProfile) {
         let Some(path) = rfd::FileDialog::new()
             .add_filter("SVG", &["svg"])
             .pick_file()
         else {
             return;
         };
-        self.add_svg_from_path(&path);
+        self.add_svg_with_profile(&path, profile);
         self.center_view();
+    }
+
+    pub(crate) fn add_svg_from_path(&mut self, path: &Path) {
+        let profile = self.app_config.svg_import_profile;
+        self.add_svg_with_profile(path, profile);
+    }
+
+    /// Adds an SVG layer whose bounds are the size the file itself declares, in millimetres.
+    pub(crate) fn add_svg_with_profile(&mut self, path: &Path, profile: SvgImportProfile) {
+        // The declared width and height are what the drawing is meant to measure on the
+        // workbed; the renderer's own size is only a fallback.
+        let (width_mm, height_mm) = match svg_size_mm(path, profile) {
+            Ok(size) => size,
+            Err(e) => {
+                log::error!("{}", t!("ui.error.add_layer", e = e));
+                return;
+            }
+        };
+
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("svg")
+            .to_string();
+
+        let mut layer = Layer::new(
+            name.clone(),
+            crate::ui::colors::LAYER_DEFAULT,
+            LayerSource::Svg {
+                path: path.to_string_lossy().to_string(),
+            },
+        );
+        layer.set_bounds(0.0, 0.0, width_mm, height_mm);
+        self.push_history();
+        self.project.add_layer(layer);
+        log::info!(
+            "{}",
+            t!(
+                "ui.info.svg_added",
+                name = name,
+                width = format!("{:.4}", width_mm),
+                height = format!("{:.4}", height_mm)
+            )
+        );
     }
 
     pub(crate) fn add_gcode_interactive(&mut self) {
@@ -165,32 +219,6 @@ impl LaserApp {
                 log::info!("{}", t!("ui.info.layer_added", name = name));
             }
             Err(e) => log::error!("{}", t!("ui.error.add_layer", e = e.to_string())),
-        }
-    }
-
-    pub(crate) fn add_svg_from_path(&mut self, path: &Path) {
-        match crate::core::image::rasterize_svg(path, 1024) {
-            Ok(svg) => {
-                let width_mm = svg.width_mm.max(1.0);
-                let height_mm = svg.height_mm.max(1.0);
-                let name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("svg")
-                    .to_string();
-                let mut layer = Layer::new(
-                    name.clone(),
-                    crate::ui::colors::LAYER_DEFAULT,
-                    LayerSource::Svg {
-                        path: path.to_string_lossy().to_string(),
-                    },
-                );
-                layer.set_bounds(0.0, 0.0, width_mm, height_mm);
-                self.push_history();
-                self.project.add_layer(layer);
-                log::info!("{}", t!("ui.info.layer_added", name = name));
-            }
-            Err(e) => log::error!("{}", t!("ui.error.add_layer", e = e)),
         }
     }
 

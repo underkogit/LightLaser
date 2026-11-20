@@ -1,6 +1,6 @@
 use egui::{Color32, Painter, Pos2, Rect, Stroke};
 
-use crate::core::image::rasterize_svg;
+use crate::core::image::{rasterize_svg_into_box, svg_raster_box};
 use crate::core::layer::{Layer, LayerSource};
 use crate::core::vector::VectorPath;
 use crate::ui::selection::HandleKind;
@@ -268,8 +268,13 @@ pub fn render_overlays(painter: &Painter, transform: &CanvasTransform, app: &Las
 /// Marks the grid intersection nearest to the pointer.
 ///
 /// Shown whenever the canvas is hovered, whether or not the grid itself is drawn, so the
-/// snap position is always visible.
+/// snap position is always visible. Holding Shift moves objects freely instead of snapping
+/// them, so the marker is hidden then: it would otherwise promise a snap that cannot happen.
 fn draw_snap_indicator(painter: &Painter, transform: &CanvasTransform, app: &LaserApp) {
+    if painter.ctx().input(|i| i.modifiers.shift) {
+        return;
+    }
+
     let step = app.app_config.grid_step_mm;
     if step <= 0.0 {
         return;
@@ -653,15 +658,19 @@ fn draw_vector_layer(
 fn load_layer_texture(kind: &str, path: &str, bounds: (f64, f64, f64, f64)) -> egui::ColorImage {
     let (min_x, min_y, max_x, max_y) = bounds;
     let width_mm = (max_x - min_x).max(1.0);
-    let aspect = ((max_y - min_y).max(1.0)) / width_mm;
+    let height_mm = (max_y - min_y).max(1.0);
+    let aspect = height_mm / width_mm;
 
     let target_w = 1024u32;
     let target_h = ((target_w as f64) * aspect).round().clamp(1.0, 4096.0) as u32;
 
     if kind == "svg" {
-        match rasterize_svg(std::path::Path::new(path), target_w) {
-            Ok(r) => {
-                let rgba = r.image.to_rgba8();
+        // The box carries the layer's aspect ratio, so drawing this texture into the layer's
+        // bounds cannot stretch the drawing.
+        let (box_w, box_h) = svg_raster_box(width_mm, height_mm, target_w);
+        match rasterize_svg_into_box(std::path::Path::new(path), box_w, box_h) {
+            Ok(image) => {
+                let rgba = image.to_rgba8();
                 let (w, h) = rgba.dimensions();
                 return egui::ColorImage::from_rgba_unmultiplied(
                     [w as usize, h as usize],

@@ -2,6 +2,7 @@ use egui::Align;
 use rust_i18n::t;
 
 use crate::comm::{GrblState, StreamerState};
+use crate::core::image::SvgImportProfile;
 use crate::ui::LaserApp;
 
 impl LaserApp {
@@ -55,6 +56,10 @@ impl LaserApp {
                 }
                 if ui.button(t!("ui.menu.add_svg")).clicked() {
                     self.add_svg_interactive();
+                    ui.close();
+                }
+                if ui.button(t!("ui.menu.add_svg_pcb")).clicked() {
+                    self.add_svg_interactive_with_profile(SvgImportProfile::PcbMillimetres);
                     ui.close();
                 }
                 if ui.button(t!("ui.menu.add_gcode")).clicked() {
@@ -162,7 +167,8 @@ impl LaserApp {
                 "{}: {:.1} mm",
                 t!("ui.menu.snap_to_grid"),
                 crate::ui::tools_state::SNAP_MM
-            ));
+            ))
+            .on_hover_text(t!("ui.tip.snap_shift").to_string());
         });
 
         ui.menu_button(help_label, |ui| {

@@ -1,5 +1,6 @@
 use rust_i18n::t;
 
+use crate::core::image::SvgImportProfile;
 use crate::ui::LaserApp;
 use crate::ui::app_config::AppTheme;
 use crate::ui::apply_fonts;
@@ -179,6 +180,22 @@ impl LaserApp {
                         .step_by(0.5)
                         .suffix(" mm"),
                 );
+                ui.end_row();
+
+                ui.label(t!("ui.settings.svg_profile").to_string());
+                egui::ComboBox::from_id_salt("settings_svg_profile")
+                    .selected_text(self.app_config.svg_import_profile.label())
+                    .show_ui(ui, |ui| {
+                        for profile in SvgImportProfile::ALL {
+                            ui.selectable_value(
+                                &mut self.app_config.svg_import_profile,
+                                profile,
+                                profile.label(),
+                            );
+                        }
+                    })
+                    .response
+                    .on_hover_text(t!("ui.settings.svg_profile_hint").to_string());
                 ui.end_row();
 
                 ui.label(t!("ui.settings.font").to_string());

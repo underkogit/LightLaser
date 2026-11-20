@@ -14,7 +14,7 @@ LightLaser is a desktop laser engraving and cutting control application written 
 - Jog controls with configurable step and feed rate.
 - Layer system:
     - Image layers with raster engraving parameters (power, feed rate, passes, pixels per millimetre, threshold, dither, invert).
-    - SVG layers, engraved either as a raster or traced into lines.
+    - SVG layers, engraved either as a raster or traced into lines, imported at the size the file declares: a `63.9826mm` by `59.9948mm` board becomes a layer of exactly that size, and the drawing is never stretched on the canvas.
     - G-code and Gerber layers as imported sources.
     - Vector layers drawn with line, curve, rectangle, and circle tools.
 - Layer visibility, enable/disable, reordering, renaming, colour editing, duplication, and deletion.
@@ -22,8 +22,8 @@ LightLaser is a desktop laser engraving and cutting control application written 
 - G-code export of the full job to a `.nc` file.
 - Undo/redo history for project edits.
 - Configurable work area, grid, axes, and grid step.
-- Settings window with interface scale, console font size, a custom font file, and the UI language.
-- Grid snapping is always enabled, at a fixed 1 mm step.
+- Settings window with interface scale, console font size, a custom font file, the UI language, and the SVG import size profile.
+- Grid snapping is always enabled, at a fixed 1 mm step; holding `Shift` while dragging an object moves it freely.
 - Internationalization with English and Russian locales.
 - Logging to the console and to an in-app console window.
 
@@ -51,12 +51,13 @@ cargo run --release
 1. Open the application. The main window contains a tool panel on the left, the canvas in the center, the layer/parameters panel on the right, and a status strip at the bottom. The log is shown in a separate console window (`View > Console`).
 2. Add content:
     - `File > Import > Add image` to create image layers.
-    - `File > Import > Add SVG` to import SVG files.
+    - `File > Import > Add SVG` to import SVG files at the size their own `width` and `height` declare.
+    - `File > Import > Import SCG (PCB)` to import a board export whose numbers carry no unit: they are read as millimetres, which is what PCB tools mean by them. The `SVG import size` setting in `Settings > Design` picks the profile that drag and drop uses.
     - `File > Import > Add G-code` to import existing G-code.
     - `File > Import > Add Gerber` to import a Gerber file.
     - Use the drawing tools to create vector shapes directly on the canvas.
     - Files can also be dragged onto the window; the extension selects the importer.
-3. Select a layer in the right panel and adjust its parameters (power, feed rate, passes, and image-specific options where applicable). Hovering a control shows a tooltip describing what it does.
+3. Select a layer in the right panel and adjust its parameters (position, power, feed rate, passes, and image-specific options where applicable). Hovering a control shows a tooltip describing what it does.
 4. Toggle layer visibility and enabled state as needed. Only enabled layers are included in jobs and exports.
 5. Connect to the machine via the connection dialog, selecting the serial port and baud rate.
 6. Use `Start` to stream the job to the controller, or `File > Export G-code` to save it to a file.
@@ -72,7 +73,7 @@ Projects are stored as TOML and include:
 
 ## Configuration
 
-Application settings are stored in `config/app_config.toml` next to the executable, and are written when the settings window is closed and when the application exits. Settings include window size, locale, theme, interface scale, console font size, custom font file, grid step, and visibility toggles for grid, axes, and work area.
+Application settings are stored in `config/app_config.toml` next to the executable, and are written when the settings window is closed and when the application exits. Settings include window size, locale, theme, interface scale, console font size, custom font file, grid step, the SVG import size profile, and visibility toggles for grid, axes, and work area.
 
 ## Locales
 
@@ -91,6 +92,7 @@ Locale files are TOML dictionaries located in `locales/`. The following locales 
 - `Delete` / `Backspace` — delete selection
 - `Escape` — cancel current tool action
 - `Enter` — finish current tool action
+- `Shift` (held while dragging an object) — move without grid snapping
 
 ## Known Limitations
 

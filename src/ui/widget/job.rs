@@ -3,7 +3,8 @@ use rust_i18n::t;
 use crate::comm::StreamerCommand;
 use crate::core::gcode::GcodeCommand;
 use crate::core::image::{
-    RasterizeOptions, engrave_layer, load_image, rasterize, rasterize_svg, svg_trace,
+    RasterizeOptions, engrave_layer, load_image, rasterize, rasterize_svg_into_box,
+    svg_raster_box, svg_trace,
 };
 use crate::core::layer::{EngraveMode, Layer, LayerSource};
 use crate::core::vector_gcode::export_vector_layer;
@@ -61,6 +62,10 @@ impl LaserApp {
                     .bounds()
                     .map(|b| (b.2 - b.0).max(1.0))
                     .unwrap_or(100.0);
+                let height_mm = layer
+                    .bounds()
+                    .map(|b| (b.3 - b.1).max(1.0))
+                    .unwrap_or(100.0);
 
                 let layer_cmds: Vec<GcodeCommand> = match &layer.source {
                     LayerSource::Image { path } => {
@@ -110,11 +115,15 @@ impl LaserApp {
                                 .round()
                                 .clamp(64.0, 4096.0) as u32;
 
-                            let svg = rasterize_svg(std::path::Path::new(path), target_px)
-                                .map_err(|e| format!("svg '{}': {}", path, e))?;
+                            // The raster carries the layer's aspect ratio, so the engraving
+                            // lands exactly where the canvas shows the layer.
+                            let (box_w, box_h) = svg_raster_box(width_mm, height_mm, target_px);
+                            let image =
+                                rasterize_svg_into_box(std::path::Path::new(path), box_w, box_h)
+                                    .map_err(|e| format!("svg '{}': {}", path, e))?;
 
                             let raster = rasterize(
-                                &svg.image,
+                                &image,
                                 RasterizeOptions {
                                     pixels_per_mm: layer.params.pixels_per_mm,
                                     threshold: layer.params.threshold,

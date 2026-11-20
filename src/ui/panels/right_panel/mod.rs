@@ -17,12 +17,17 @@ pub enum RightPanelTab {
 
 pub struct RightPanelState {
     pub active_tab: RightPanelTab,
+
+    /// Layer whose position is being dragged or typed in right now, so one continuous edit
+    /// adds a single entry to the undo history instead of one per frame.
+    pub position_edit_layer: Option<usize>,
 }
 
 impl Default for RightPanelState {
     fn default() -> Self {
         Self {
             active_tab: RightPanelTab::Layers,
+            position_edit_layer: None,
         }
     }
 }
@@ -48,6 +53,18 @@ impl LaserApp {
         ui.separator();
 
         self.right_panel_state.active_tab = active_tab;
+
+        // A position edit cannot continue once the panel stops showing that layer, so the next
+        // edit starts a fresh undo step instead of extending the previous one.
+        let position_field_shown = active_tab == RightPanelTab::Properties
+            && self
+                .ui_state
+                .selection
+                .layer
+                .is_some_and(|i| i < self.project.layers.len());
+        if !position_field_shown {
+            self.right_panel_state.position_edit_layer = None;
+        }
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.add_space(4.0);

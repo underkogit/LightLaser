@@ -1,6 +1,6 @@
 use rust_i18n::t;
 
-use crate::core::layer::{EngraveMode, LayerParams, LayerSource};
+use crate::core::layer::{EngraveMode, Layer, LayerParams, LayerSource};
 use crate::ui::LaserApp;
 
 impl LaserApp {
@@ -62,6 +62,56 @@ impl LaserApp {
                 self.project.layers[idx].color = [color32.r(), color32.g(), color32.b()];
             }
         });
+
+        // Position of the whole layer on the workbed. Editing it translates the layer the
+        // same way dragging does, so X and Y both move it as a whole.
+        let (mut pos_x, mut pos_y) = layer_position(&self.project.layers[idx]);
+        let mut x_resp = None;
+        let mut y_resp = None;
+        ui.horizontal(|ui| {
+            ui.label(t!("ui.label.position").to_string());
+            x_resp = Some(
+                ui.add(
+                    egui::DragValue::new(&mut pos_x)
+                        .speed(0.1)
+                        .prefix("X: ")
+                        .suffix(" mm"),
+                )
+                .on_hover_text(t!("ui.tip.position").to_string()),
+            );
+            y_resp = Some(
+                ui.add(
+                    egui::DragValue::new(&mut pos_y)
+                        .speed(0.1)
+                        .prefix("Y: ")
+                        .suffix(" mm"),
+                )
+                .on_hover_text(t!("ui.tip.position").to_string()),
+            );
+        });
+
+        if x_resp.as_ref().is_some_and(|r| r.changed())
+            || y_resp.as_ref().is_some_and(|r| r.changed())
+        {
+            let (old_x, old_y) = layer_position(&self.project.layers[idx]);
+            let (dx, dy) = (pos_x - old_x, pos_y - old_y);
+            if dx != 0.0 || dy != 0.0 {
+                if self.right_panel_state.position_edit_layer != Some(idx) {
+                    self.push_history();
+                    self.right_panel_state.position_edit_layer = Some(idx);
+                }
+                self.project.layers[idx].translate(dx, dy);
+            }
+        }
+
+        // Dragging a value or typing in it stays one gesture, so it stays one undo step.
+        let position_editing = |r: &Option<egui::Response>| {
+            r.as_ref()
+                .is_some_and(|r| r.dragged() || r.has_focus() || r.is_pointer_button_down_on())
+        };
+        if !position_editing(&x_resp) && !position_editing(&y_resp) {
+            self.right_panel_state.position_edit_layer = None;
+        }
 
         ui.add_space(8.0);
         ui.separator();
@@ -183,4 +233,14 @@ impl LaserApp {
             }
         }
     }
+}
+
+/// Where the object sits on the workbed: the lower-left corner of its bounds, which is what
+/// the canvas draws, measures and hit-tests. A layer without bounds (an empty vector layer)
+/// falls back to its accumulated offset.
+fn layer_position(layer: &Layer) -> (f64, f64) {
+    layer
+        .bounds()
+        .map(|b| (b.0, b.1))
+        .unwrap_or((layer.offset[0], layer.offset[1]))
 }

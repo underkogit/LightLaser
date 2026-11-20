@@ -83,6 +83,15 @@ fn handle_select_input(
             apply_rubber_band_selection(app, start_world, current_world, modifiers);
         }
         app.canvas.drag = DragMode::None;
+
+        // Shift starts an additive selection, but it is also the "move without snapping"
+        // modifier. The toggle only applies to a click that never became a drag, so
+        // Shift-dragging keeps the object selected and moves it.
+        if let Some(li) = app.canvas.pending_toggle.take() {
+            if response.clicked() {
+                app.ui_state.selection.toggle_layer(li);
+            }
+        }
     }
 
     if let DragMode::RubberBand { current_world, .. } = &mut app.canvas.drag {
@@ -90,7 +99,7 @@ fn handle_select_input(
     }
 
     if response.dragged_by(egui::PointerButton::Primary) {
-        handle_drag(app, response, transform, world);
+        handle_drag(app, response, transform, world, modifiers);
     }
 
     if ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
@@ -188,6 +197,9 @@ fn handle_primary_down(
     tol_mm: f64,
     modifiers: &ToolModifiers,
 ) {
+    // A new press starts a new gesture, so any toggle left over from the previous one is stale.
+    app.canvas.pending_toggle = None;
+
     let mut picked = false;
     let mut changed = false;
 
@@ -290,11 +302,16 @@ fn handle_primary_down(
     if !picked {
         if let Some(li) = hit_test_layers(&app.project.layers, world) {
             if modifiers.shift {
-                app.ui_state.selection.toggle_layer(li);
-            } else {
-                if !app.ui_state.selection.is_layer_selected(li) {
-                    app.ui_state.selection.set_single_layer(li);
+                if app.ui_state.selection.is_layer_selected(li) {
+                    // Hold the toggle back until the press is known to be a click. Shift is
+                    // also the modifier that moves without grid snapping, and deselecting the
+                    // object mid-press would leave the drag with nothing to move.
+                    app.canvas.pending_toggle = Some(li);
+                } else {
+                    app.ui_state.selection.toggle_layer(li);
                 }
+            } else if !app.ui_state.selection.is_layer_selected(li) {
+                app.ui_state.selection.set_single_layer(li);
             }
             let states = collect_drag_states(app);
             app.canvas.drag = DragMode::MoveLayer {
@@ -392,10 +409,22 @@ fn handle_drag(
     response: &Response,
     transform: &CanvasTransform,
     world: CurvePoint,
+    modifiers: &ToolModifiers,
 ) {
     let delta = response.drag_delta();
     let raw_dx = delta.x as f64 / transform.scale as f64;
     let raw_dy = -(delta.y as f64) / transform.scale as f64;
+
+    // Holding Shift while dragging turns grid snapping off, so an object can be placed
+    // freely. The modifier is read every frame, so this works whether Shift was pressed
+    // before or during the drag. A step of zero means "do not snap".
+    let snap_step = if modifiers.shift {
+        0.0
+    } else if app.tools.snap_enabled && app.tools.snap_mm > 0.0 {
+        app.tools.snap_mm
+    } else {
+        0.0
+    };
 
     match &app.canvas.drag {
         DragMode::Pan => {
@@ -407,10 +436,9 @@ fn handle_drag(
         } => {
             let mut target_x = world.x - start_world.x;
             let mut target_y = world.y - start_world.y;
-            if app.tools.snap_enabled && app.tools.snap_mm > 0.0 {
-                let step = app.tools.snap_mm;
-                target_x = (target_x / step).round() * step;
-                target_y = (target_y / step).round() * step;
+            if snap_step > 0.0 {
+                target_x = (target_x / snap_step).round() * snap_step;
+                target_y = (target_y / snap_step).round() * snap_step;
             }
 
             let states = start_states.clone();
@@ -446,10 +474,9 @@ fn handle_drag(
         DragMode::MoveNode { layer, shape, node } => {
             let mut tx = world.x;
             let mut ty = world.y;
-            if app.tools.snap_enabled && app.tools.snap_mm > 0.0 {
-                let step = app.tools.snap_mm;
-                tx = (tx / step).round() * step;
-                ty = (ty / step).round() * step;
+            if snap_step > 0.0 {
+                tx = (tx / snap_step).round() * snap_step;
+                ty = (ty / snap_step).round() * snap_step;
             }
             if let Some(l) = app.project.layers.get_mut(*layer) {
                 if let Some(s) = l.shapes.get_mut(*shape) {
@@ -472,10 +499,9 @@ fn handle_drag(
         } => {
             let mut tx = world.x;
             let mut ty = world.y;
-            if app.tools.snap_enabled && app.tools.snap_mm > 0.0 {
-                let step = app.tools.snap_mm;
-                tx = (tx / step).round() * step;
-                ty = (ty / step).round() * step;
+            if snap_step > 0.0 {
+                tx = (tx / snap_step).round() * snap_step;
+                ty = (ty / snap_step).round() * snap_step;
             }
             if let Some(l) = app.project.layers.get_mut(*layer) {
                 if let Some(s) = l.shapes.get_mut(*shape) {
