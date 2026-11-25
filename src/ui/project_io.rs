@@ -6,6 +6,118 @@ use crate::core::image::{SvgImportProfile, svg_size_mm};
 use crate::core::layer::{Layer, LayerSource};
 use crate::ui::LaserApp;
 
+const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "bmp"];
+const SVG_EXTENSIONS: &[&str] = &["svg"];
+const GCODE_EXTENSIONS: &[&str] = &["nc", "gcode", "txt"];
+const GERBER_EXTENSIONS: &[&str] = &[
+    "gbr", "ger", "gerber", "gtl", "gbl", "gts", "gbs", "gto", "gbo", "gko", "gm1",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FileKind {
+    Image,
+    Svg,
+    Gcode,
+    Gerber,
+}
+
+impl FileKind {
+    pub(crate) fn of(source: &LayerSource) -> Option<Self> {
+        match source {
+            LayerSource::Image { .. } => Some(Self::Image),
+            LayerSource::Svg { .. } => Some(Self::Svg),
+            LayerSource::Gcode { .. } => Some(Self::Gcode),
+            LayerSource::Gerber { .. } => Some(Self::Gerber),
+            LayerSource::Vector => None,
+        }
+    }
+
+    fn filter_name(self) -> &'static str {
+        match self {
+            Self::Image => "Images",
+            Self::Svg => "SVG",
+            Self::Gcode => "G-code",
+            Self::Gerber => "Gerber",
+        }
+    }
+
+    fn extensions(self) -> &'static [&'static str] {
+        match self {
+            Self::Image => IMAGE_EXTENSIONS,
+            Self::Svg => SVG_EXTENSIONS,
+            Self::Gcode => GCODE_EXTENSIONS,
+            Self::Gerber => GERBER_EXTENSIONS,
+        }
+    }
+
+    fn dialog(self) -> rfd::FileDialog {
+        rfd::FileDialog::new().add_filter(self.filter_name(), self.extensions())
+    }
+
+    fn default_name(self) -> &'static str {
+        match self {
+            Self::Image => "image",
+            Self::Svg => "svg",
+            Self::Gcode => "gcode",
+            Self::Gerber => "gerber",
+        }
+    }
+
+    fn source(self, path: &Path) -> LayerSource {
+        let path = path.to_string_lossy().to_string();
+        match self {
+            Self::Image => LayerSource::Image { path },
+            Self::Svg => LayerSource::Svg { path },
+            Self::Gcode => LayerSource::Gcode { path },
+            Self::Gerber => LayerSource::Gerber { path },
+        }
+    }
+
+    fn bounds(
+        self,
+        path: &Path,
+        profile: SvgImportProfile,
+        previous: Option<[f64; 4]>,
+    ) -> Result<[f64; 4], String> {
+        let previous = previous.filter(|b| b[2] > b[0] && b[3] > b[1]);
+        let left = previous.map(|b| b[0]).unwrap_or(0.0);
+        let bottom = previous.map(|b| b[1]).unwrap_or(0.0);
+
+        match self {
+            Self::Image => {
+                let image = crate::core::image::load_image(path).map_err(|e| e.to_string())?;
+                let aspect = image.aspect_ratio().max(1e-6);
+                let width = previous
+                    .map(|b| b[2] - b[0])
+                    .filter(|w| *w > 1e-6)
+                    .unwrap_or(100.0);
+                Ok([left, bottom, left + width, bottom + width / aspect])
+            }
+            Self::Svg => {
+                let (width, height) = svg_size_mm(path, profile).map_err(|e| e.to_string())?;
+                Ok([left, bottom, left + width, bottom + height])
+            }
+            Self::Gcode => {
+                let (min_x, min_y, max_x, max_y) =
+                    gcode_bounds(path).unwrap_or((0.0, 0.0, 100.0, 100.0));
+                Ok([
+                    left,
+                    bottom,
+                    left + (max_x - min_x),
+                    bottom + (max_y - min_y),
+                ])
+            }
+            Self::Gerber => {
+                let segments =
+                    crate::core::image::parse_gerber_segments(path).map_err(|e| e.to_string())?;
+                let (min_x, min_y, max_x, max_y) =
+                    gerber_bounds(&segments).unwrap_or((0.0, 0.0, 100.0, 100.0));
+                Ok([min_x, min_y, max_x, max_y])
+            }
+        }
+    }
+}
+
 impl LaserApp {
     pub(crate) fn new_project(&mut self) {
         self.push_history();
@@ -95,15 +207,42 @@ impl LaserApp {
         std::fs::write(path, content).map_err(|e| e.to_string())
     }
 
-    pub(crate) fn add_image_interactive(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("Images", &["png", "jpg", "jpeg", "bmp"])
-            .pick_file()
-        else {
+    pub(crate) fn add_file_interactive(&mut self, kind: FileKind) {
+        let Some(path) = kind.dialog().pick_file() else {
             return;
         };
-        self.add_image_from_path(&path);
+        self.add_file_from_path(kind, &path);
         self.center_view();
+    }
+
+    pub(crate) fn add_file_from_path(&mut self, kind: FileKind, path: &Path) {
+        let profile = self.app_config.svg_import_profile;
+        self.add_file_with_profile(kind, path, profile);
+    }
+
+    pub(crate) fn add_file_with_profile(
+        &mut self,
+        kind: FileKind,
+        path: &Path,
+        profile: SvgImportProfile,
+    ) {
+        let Some(bounds) = self.resolve_bounds(kind, path, profile, None) else {
+            return;
+        };
+        let name = file_stem(path, kind.default_name());
+        let mut layer = Layer::new(name.clone(), kind.source(path));
+        layer.set_bounds(bounds[0], bounds[1], bounds[2], bounds[3]);
+        self.push_history();
+        self.project.add_layer(layer);
+        self.log_import(kind, &name, bounds);
+    }
+
+    pub(crate) fn add_image_interactive(&mut self) {
+        self.add_file_interactive(FileKind::Image);
+    }
+
+    pub(crate) fn add_image_from_path(&mut self, path: &Path) {
+        self.add_file_from_path(FileKind::Image, path);
     }
 
     pub(crate) fn add_svg_interactive(&mut self) {
@@ -116,10 +255,7 @@ impl LaserApp {
     /// The import menu uses this for explicit profiles such as the PCB one; drag and drop uses
     /// the profile configured in the settings window.
     pub(crate) fn add_svg_interactive_with_profile(&mut self, profile: SvgImportProfile) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("SVG", &["svg"])
-            .pick_file()
-        else {
+        let Some(path) = FileKind::Svg.dialog().pick_file() else {
             return;
         };
         self.add_svg_with_profile(&path, profile);
@@ -133,157 +269,121 @@ impl LaserApp {
 
     /// Adds an SVG layer whose bounds are the size the file itself declares, in millimetres.
     pub(crate) fn add_svg_with_profile(&mut self, path: &Path, profile: SvgImportProfile) {
-        // The declared width and height are what the drawing is meant to measure on the
-        // workbed; the renderer's own size is only a fallback.
-        let (width_mm, height_mm) = match svg_size_mm(path, profile) {
-            Ok(size) => size,
-            Err(e) => {
-                log::error!("{}", t!("ui.error.add_layer", e = e));
-                return;
-            }
-        };
-
-        let name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("svg")
-            .to_string();
-
-        let mut layer = Layer::new(
-            name.clone(),
-            LayerSource::Svg {
-                path: path.to_string_lossy().to_string(),
-            },
-        );
-        layer.set_bounds(0.0, 0.0, width_mm, height_mm);
-        self.push_history();
-        self.project.add_layer(layer);
-        log::info!(
-            "{}",
-            t!(
-                "ui.info.svg_added",
-                name = name,
-                width = format!("{:.4}", width_mm),
-                height = format!("{:.4}", height_mm)
-            )
-        );
+        self.add_file_with_profile(FileKind::Svg, path, profile);
     }
 
     pub(crate) fn add_gcode_interactive(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("G-code", &["nc", "gcode", "txt"])
-            .pick_file()
-        else {
-            return;
-        };
-        self.add_gcode_from_path(&path);
-        self.center_view();
-    }
-
-    pub(crate) fn add_gerber_interactive(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter(
-                "Gerber",
-                &[
-                    "gbr", "ger", "gerber", "gtl", "gbl", "gts", "gbs", "gto", "gbo", "gko", "gm1",
-                ],
-            )
-            .pick_file()
-        else {
-            return;
-        };
-        self.add_gerber_from_path(&path);
-        self.center_view();
-    }
-
-    pub(crate) fn add_image_from_path(&mut self, path: &Path) {
-        match crate::core::image::load_image(path) {
-            Ok(img) => {
-                let aspect = img.aspect_ratio().max(1e-6);
-                let width_mm = 100.0;
-                let height_mm = width_mm / aspect;
-                let name = path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("image")
-                    .to_string();
-                let mut layer = Layer::new(
-                    name.clone(),
-                    LayerSource::Image {
-                        path: path.to_string_lossy().to_string(),
-                    },
-                );
-                layer.set_bounds(0.0, 0.0, width_mm, height_mm);
-                self.push_history();
-                self.project.add_layer(layer);
-                log::info!("{}", t!("ui.info.layer_added", name = name));
-            }
-            Err(e) => log::error!("{}", t!("ui.error.add_layer", e = e.to_string())),
-        }
+        self.add_file_interactive(FileKind::Gcode);
     }
 
     pub(crate) fn add_gcode_from_path(&mut self, path: &Path) {
-        let name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("gcode")
-            .to_string();
+        self.add_file_from_path(FileKind::Gcode, path);
+    }
 
-        let (min_x, min_y, max_x, max_y) = gcode_bounds(path).unwrap_or((0.0, 0.0, 100.0, 100.0));
-
-        let mut layer = Layer::new(
-            name.clone(),
-            LayerSource::Gcode {
-                path: path.to_string_lossy().to_string(),
-            },
-        );
-        layer.set_bounds(min_x, min_y, max_x, max_y);
-        self.push_history();
-        self.project.add_layer(layer);
-        log::info!("{}", t!("ui.info.layer_added", name = name));
+    pub(crate) fn add_gerber_interactive(&mut self) {
+        self.add_file_interactive(FileKind::Gerber);
     }
 
     pub(crate) fn add_gerber_from_path(&mut self, path: &Path) {
-        let segments = match crate::core::image::parse_gerber_segments(path) {
-            Ok(segments) => segments,
-            Err(e) => {
-                log::error!("{}", t!("ui.error.add_layer", e = e));
-                return;
-            }
+        self.add_file_from_path(FileKind::Gerber, path);
+    }
+
+    pub(crate) fn replace_layer_interactive(&mut self, id: u64) {
+        let Some(index) = self.project.layer_index(id) else {
+            return;
+        };
+        let source = self.project.layers[index].source.clone();
+        let Some(kind) = FileKind::of(&source) else {
+            log::warn!("{}", t!("ui.warn.layer_not_replaceable"));
+            return;
+        };
+        let Some(path) = kind.dialog().pick_file() else {
+            return;
+        };
+        self.replace_layer_source(index, kind, &path);
+    }
+
+    fn replace_layer_source(&mut self, index: usize, kind: FileKind, path: &Path) {
+        let previous = self
+            .project
+            .layers
+            .get(index)
+            .and_then(|layer| layer.bounds);
+        let profile = self.app_config.svg_import_profile;
+        let Some(bounds) = self.resolve_bounds(kind, path, profile, previous) else {
+            return;
         };
 
-        let name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("gerber")
-            .to_string();
-
-        let mut min_x = f64::INFINITY;
-        let mut min_y = f64::INFINITY;
-        let mut max_x = f64::NEG_INFINITY;
-        let mut max_y = f64::NEG_INFINITY;
-
-        for (x0, y0, x1, y1) in &segments {
-            min_x = min_x.min(*x0).min(*x1);
-            min_y = min_y.min(*y0).min(*y1);
-            max_x = max_x.max(*x0).max(*x1);
-            max_y = max_y.max(*y0).max(*y1);
-        }
-
-        let mut layer = Layer::new(
-            name.clone(),
-            LayerSource::Gerber {
-                path: path.to_string_lossy().to_string(),
-            },
-        );
-
-        if min_x.is_finite() && min_y.is_finite() {
-            layer.set_bounds(min_x, min_y, max_x, max_y);
-        }
-
         self.push_history();
-        self.project.add_layer(layer);
-        log::info!("{}", t!("ui.info.layer_added", name = name));
+        let Some(layer) = self.project.layers.get_mut(index) else {
+            return;
+        };
+        layer.source = kind.source(path);
+        layer.name = file_stem(path, kind.default_name());
+        layer.set_bounds(bounds[0], bounds[1], bounds[2], bounds[3]);
+
+        self.canvas.texture_cache.clear();
+        self.canvas.segment_cache.clear();
+        log::info!("{}", t!("ui.info.layer_replaced", name = layer.name));
+    }
+
+    fn resolve_bounds(
+        &self,
+        kind: FileKind,
+        path: &Path,
+        profile: SvgImportProfile,
+        previous: Option<[f64; 4]>,
+    ) -> Option<[f64; 4]> {
+        match kind.bounds(path, profile, previous) {
+            Ok(bounds) => Some(bounds),
+            Err(e) => {
+                log::error!("{}", t!("ui.error.add_layer", e = e));
+                None
+            }
+        }
+    }
+
+    fn log_import(&self, kind: FileKind, name: &str, bounds: [f64; 4]) {
+        if kind == FileKind::Svg {
+            log::info!(
+                "{}",
+                t!(
+                    "ui.info.svg_added",
+                    name = name,
+                    width = format!("{:.4}", bounds[2] - bounds[0]),
+                    height = format!("{:.4}", bounds[3] - bounds[1])
+                )
+            );
+        } else {
+            log::info!("{}", t!("ui.info.layer_added", name = name));
+        }
+    }
+}
+
+fn file_stem(path: &Path, fallback: &str) -> String {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+fn gerber_bounds(segments: &[(f64, f64, f64, f64)]) -> Option<(f64, f64, f64, f64)> {
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+
+    for (x0, y0, x1, y1) in segments {
+        min_x = min_x.min(*x0).min(*x1);
+        min_y = min_y.min(*y0).min(*y1);
+        max_x = max_x.max(*x0).max(*x1);
+        max_y = max_y.max(*y0).max(*y1);
+    }
+
+    if min_x.is_finite() && min_y.is_finite() && max_x.is_finite() && max_y.is_finite() {
+        Some((min_x, min_y, max_x, max_y))
+    } else {
+        None
     }
 }
 

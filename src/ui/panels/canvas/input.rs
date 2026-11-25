@@ -356,7 +356,6 @@ fn collect_drag_states(app: &LaserApp) -> Vec<LayerDragState> {
                 .collect::<Vec<_>>();
             states.push(LayerDragState {
                 id,
-                start_offset: layer.offset,
                 start_bounds: layer.bounds,
                 start_shape_nodes,
             });
@@ -444,9 +443,6 @@ fn handle_drag(
             let states = start_states.clone();
             for st in &states {
                 if let Some(layer) = app.project.layers.get_mut(st.id) {
-                    layer.offset[0] = st.start_offset[0] + target_x;
-                    layer.offset[1] = st.start_offset[1] + target_y;
-
                     for (si, shape) in layer.shapes.iter_mut().enumerate() {
                         if let Some(start_nodes) = st.start_shape_nodes.get(si) {
                             for (ni, node) in shape.nodes.iter_mut().enumerate() {

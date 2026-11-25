@@ -36,7 +36,6 @@ pub enum DragMode {
 #[derive(Debug, Clone)]
 pub struct LayerDragState {
     pub id: usize,
-    pub start_offset: [f64; 2],
     pub start_bounds: Option<[f64; 4]>,
     pub start_shape_nodes: Vec<Vec<crate::core::vector::PathNode>>,
 }

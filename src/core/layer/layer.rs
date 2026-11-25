@@ -174,16 +174,10 @@ pub struct Layer {
     pub shapes: Vec<VectorShape>,
 
     #[serde(default)]
-    pub offset: [f64; 2],
-
-    #[serde(default)]
     pub mirror_x: bool,
 
     #[serde(default)]
     pub mirror_y: bool,
-
-    #[serde(default)]
-    pub mirror_center: Option<[f64; 2]>,
 }
 
 impl Layer {
@@ -198,10 +192,8 @@ impl Layer {
             params: LayerParams::default(),
             bounds: None,
             shapes: Vec::new(),
-            offset: [0.0, 0.0],
             mirror_x: false,
             mirror_y: false,
-            mirror_center: None,
         }
     }
 
@@ -259,9 +251,6 @@ impl Layer {
     }
 
     pub fn translate(&mut self, dx: f64, dy: f64) {
-        self.offset[0] += dx;
-        self.offset[1] += dy;
-
         for shape in &mut self.shapes {
             for node in &mut shape.nodes {
                 node.point.x += dx;
@@ -278,6 +267,49 @@ impl Layer {
             b[1] += dy;
             b[2] += dx;
             b[3] += dy;
+        }
+    }
+
+    /// Mirrors the layer about `center`.
+    ///
+    /// Raster and segment layers only flip their content inside their own box and move the
+    /// box, because their geometry is rebuilt from the source file on demand. Vector layers
+    /// carry absolute coordinates, so their nodes are mirrored directly.
+    pub fn mirror(&mut self, mirror_x: bool, center: [f64; 2]) {
+        if self.is_vector() {
+            for shape in &mut self.shapes {
+                for node in &mut shape.nodes {
+                    if mirror_x {
+                        node.point.x = 2.0 * center[0] - node.point.x;
+                        node.handle_in.x = 2.0 * center[0] - node.handle_in.x;
+                        node.handle_out.x = 2.0 * center[0] - node.handle_out.x;
+                    } else {
+                        node.point.y = 2.0 * center[1] - node.point.y;
+                        node.handle_in.y = 2.0 * center[1] - node.handle_in.y;
+                        node.handle_out.y = 2.0 * center[1] - node.handle_out.y;
+                    }
+                }
+                shape.nodes.reverse();
+            }
+            self.recompute_bounds();
+            return;
+        }
+
+        if mirror_x {
+            self.mirror_x = !self.mirror_x;
+        } else {
+            self.mirror_y = !self.mirror_y;
+        }
+
+        if let Some(b) = self.bounds.as_mut() {
+            let previous = *b;
+            if mirror_x {
+                b[0] = 2.0 * center[0] - previous[2];
+                b[2] = 2.0 * center[0] - previous[0];
+            } else {
+                b[1] = 2.0 * center[1] - previous[3];
+                b[3] = 2.0 * center[1] - previous[1];
+            }
         }
     }
 }

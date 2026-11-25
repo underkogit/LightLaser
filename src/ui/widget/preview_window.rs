@@ -2,13 +2,7 @@ use std::time::{Duration, Instant};
 
 use egui::{Color32, Pos2, Rect, Stroke, Vec2};
 
-use crate::core::gcode::{normalize_gcode, parse_gcode_file_segments, transform_for_layer};
-use crate::core::image::{
-    RasterizeOptions, engrave_segments, load_image, rasterize, rasterize_svg_into_box,
-    svg_raster_box, svg_trace,
-};
-use crate::core::layer::{EngraveMode, Layer, LayerSource};
-use crate::core::vector::VectorPath;
+use crate::core::layer::{Layer, layer_segments, placement};
 use crate::ui::line_raster;
 use crate::ui::panels::canvas::state::PreviewWindow;
 use crate::ui::LaserApp;
@@ -212,146 +206,14 @@ fn rebuild_preview(app: &mut LaserApp) {
     app.canvas.preview_window.raster = Default::default();
 }
 
-fn layer_origin(layer: &Layer) -> (f64, f64) {
-    if layer.is_vector() {
-        (layer.offset[0], layer.offset[1])
-    } else {
-        layer.bounds().map(|b| (b.0, b.1)).unwrap_or((0.0, 0.0))
-    }
-}
-
 fn build_layer_segments(layer: &Layer) -> Vec<(f64, f64, f64, f64)> {
-    if layer.is_vector() {
-        let mut out = Vec::new();
-        for shape in &layer.shapes {
-            let mut path = VectorPath::new();
-            path.nodes = shape.nodes.clone();
-            path.stroke = shape.stroke.clone();
-            path.closed = shape.closed;
-            let pts = path.flatten(0.1);
-            if pts.len() < 2 {
-                continue;
-            }
-            for w in pts.windows(2) {
-                out.push((w[0].x, w[0].y, w[1].x, w[1].y));
-            }
-            if path.closed {
-                if let (Some(last), Some(first)) = (pts.last(), pts.first()) {
-                    out.push((last.x, last.y, first.x, first.y));
-                }
-            }
-        }
-        return out;
-    }
+    let origin = placement(layer);
 
-    let origin = layer_origin(layer);
-    let width_mm = layer
-        .bounds()
-        .map(|b| (b.2 - b.0).max(1.0))
-        .unwrap_or(100.0);
-    let height_mm = layer
-        .bounds()
-        .map(|b| (b.3 - b.1).max(1.0))
-        .unwrap_or(100.0);
-
-    match &layer.source {
-        LayerSource::Image { path } => {
-            let Ok(loaded) = load_image(std::path::Path::new(path)) else {
-                return Vec::new();
-            };
-            let raster = rasterize(
-                &loaded.dynamic,
-                RasterizeOptions {
-                    pixels_per_mm: layer.params.pixels_per_mm,
-                    threshold: layer.params.threshold,
-                    invert: layer.params.invert,
-                },
-                Some(width_mm),
-            );
-            engrave_segments(&raster, &layer.params, origin)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|s| (s.x0, s.y0, s.x1, s.y1))
-                .collect()
-        }
-        LayerSource::Svg { path } => {
-            if layer.params.engrave_mode == EngraveMode::Lines {
-                let target_px = (layer.params.pixels_per_mm * width_mm)
-                    .round()
-                    .clamp(512.0, 4096.0) as u32;
-
-                let Ok(img) =
-                    svg_trace::rasterize_svg_to_image(std::path::Path::new(path), target_px)
-                else {
-                    return Vec::new();
-                };
-
-                let paths = svg_trace::trace_image_to_paths(&img, 128);
-                let scale_x = width_mm / target_px as f64;
-                let scale_y =
-                    (width_mm * (img.height() as f64 / img.width() as f64)) / img.height() as f64;
-
-                let mut out = Vec::new();
-                for p in paths {
-                    if p.points.len() < 2 {
-                        continue;
-                    }
-                    for w in p.points.windows(2) {
-                        let x0 = origin.0 + w[0].0 * scale_x;
-                        let y0 = origin.1 + w[0].1 * scale_y;
-                        let x1 = origin.0 + w[1].0 * scale_x;
-                        let y1 = origin.1 + w[1].1 * scale_y;
-                        out.push((x0, y0, x1, y1));
-                    }
-                }
-                out
-            } else {
-                let target_px = (layer.params.pixels_per_mm * width_mm)
-                    .round()
-                    .clamp(64.0, 4096.0) as u32;
-                let (box_w, box_h) = svg_raster_box(width_mm, height_mm, target_px);
-                let Ok(image) =
-                    rasterize_svg_into_box(std::path::Path::new(path), box_w, box_h)
-                else {
-                    return Vec::new();
-                };
-                let raster = rasterize(
-                    &image,
-                    RasterizeOptions {
-                        pixels_per_mm: layer.params.pixels_per_mm,
-                        threshold: layer.params.threshold,
-                        invert: layer.params.invert,
-                    },
-                    Some(width_mm),
-                );
-                engrave_segments(&raster, &layer.params, origin)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|s| (s.x0, s.y0, s.x1, s.y1))
-                    .collect()
-            }
-        }
-        LayerSource::Gcode { path } => {
-            let raw = parse_gcode_file_segments(std::path::Path::new(path));
-            let transformed = transform_for_layer(raw, layer);
-            let segs = normalize_gcode(transformed);
-            let ox = layer.offset[0];
-            let oy = layer.offset[1];
-            segs.into_iter()
-                .map(|(x0, y0, x1, y1)| (x0 + ox, y0 + oy, x1 + ox, y1 + oy))
-                .collect()
-        }
-        LayerSource::Gerber { path } => {
-            let ox = layer.offset[0];
-            let oy = layer.offset[1];
-            crate::core::image::parse_gerber_segments(std::path::Path::new(path))
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(x0, y0, x1, y1)| (x0 + ox, y0 + oy, x1 + ox, y1 + oy))
-                .collect()
-        }
-        LayerSource::Vector => Vec::new(),
-    }
+    layer_segments(layer)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(x0, y0, x1, y1)| (x0 + origin.0, y0 + origin.1, x1 + origin.0, y1 + origin.1))
+        .collect()
 }
 
 fn fit_preview(pw: &mut crate::ui::panels::canvas::state::PreviewWindow, rect: Rect) {

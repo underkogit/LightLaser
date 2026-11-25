@@ -7,7 +7,7 @@ pub(crate) mod svg_raster;
 pub(crate) mod svg_size;
 pub(crate) mod svg_trace;
 
-pub use engraver::{EngraveError, EngraveSegment, engrave_layer, engrave_segments};
+pub use engraver::{EngraveError, EngraveSegment, engrave_segments};
 pub use gerber::parse_gerber_segments;
 pub use loader::{LoadImageError, LoadedImage, load_image};
 pub use palette::{PaletteColor, extract_palette};

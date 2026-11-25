@@ -28,6 +28,29 @@ fn default_version() -> u32 {
     PROJECT_VERSION
 }
 
+fn copy_suffix() -> String {
+    let translated = t!("ui.layer_group.copy_suffix").to_string();
+    if translated.starts_with("ui.") {
+        "copy".to_string()
+    } else {
+        translated
+    }
+}
+
+fn strip_copy_marker(name: &str, suffix: &str) -> Option<String> {
+    let (head, tail) = name.rsplit_once(&format!(" {suffix}"))?;
+    let head = head.trim_end();
+    if head.is_empty() {
+        return None;
+    }
+    let tail = tail.trim();
+    if tail.is_empty() || tail.chars().all(|c| c.is_ascii_digit()) {
+        Some(head.to_string())
+    } else {
+        None
+    }
+}
+
 impl Project {
     pub fn new() -> Self {
         Self {
@@ -139,6 +162,53 @@ impl Project {
         self.add_group(name)
     }
 
+    fn unique_group_name(&self, base: &str) -> String {
+        let base = base.trim();
+        let suffix = copy_suffix();
+        let root = strip_copy_marker(base, &suffix).unwrap_or_else(|| base.to_string());
+        let root = if root.is_empty() {
+            self.auto_group_name()
+        } else {
+            root
+        };
+        let first = format!("{root} {suffix}");
+        if !self.groups.iter().any(|group| group.name == first) {
+            return first;
+        }
+        for n in 2..=9999 {
+            let name = format!("{first} {n}");
+            if !self.groups.iter().any(|group| group.name == name) {
+                return name;
+            }
+        }
+        first
+    }
+
+    pub fn duplicate_group(&mut self, id: GroupId) -> Option<GroupId> {
+        let source = self.group(id)?.clone();
+        let members: Vec<Layer> = self
+            .group_members(id)
+            .into_iter()
+            .filter_map(|index| self.layers.get(index).cloned())
+            .collect();
+        let position = self.groups.iter().position(|group| group.id == id)?;
+
+        let copy_id = self.next_id();
+        let mut group = LayerGroup::new(copy_id, self.unique_group_name(&source.name));
+        group.collapsed = source.collapsed;
+        group.visible = source.visible;
+        group.enabled = source.enabled;
+        self.groups.insert(position + 1, group);
+
+        for mut layer in members {
+            layer.id = 0;
+            layer.group = copy_id;
+            self.add_layer_to_group(layer, copy_id);
+        }
+
+        Some(copy_id)
+    }
+
     fn ensure_group(&mut self, requested: GroupId) -> GroupId {
         if self.group(requested).is_some() {
             return requested;
@@ -235,6 +305,44 @@ impl Project {
         for layer in self.layers.iter_mut().filter(|l| l.group == id) {
             layer.is_visible = visible;
         }
+    }
+
+    pub fn layers_bounds(&self, ids: &[u64]) -> Option<(f64, f64, f64, f64)> {
+        let mut out: Option<(f64, f64, f64, f64)> = None;
+
+        for id in ids {
+            let Some((a, b, c, d)) = self
+                .layers
+                .iter()
+                .find(|layer| layer.id == *id)
+                .and_then(|layer| layer.bounds())
+            else {
+                continue;
+            };
+
+            out = Some(match out {
+                None => (a, b, c, d),
+                Some((x0, y0, x1, y1)) => (x0.min(a), y0.min(b), x1.max(c), y1.max(d)),
+            });
+        }
+
+        out
+    }
+
+    pub fn mirror_layers(&mut self, ids: &[u64], mirror_x: bool) -> bool {
+        let Some((min_x, min_y, max_x, max_y)) = self.layers_bounds(ids) else {
+            return false;
+        };
+
+        let center = [(min_x + max_x) / 2.0, (min_y + max_y) / 2.0];
+
+        for id in ids {
+            if let Some(index) = self.layer_index(*id) {
+                self.layers[index].mirror(mirror_x, center);
+            }
+        }
+
+        true
     }
 
     pub fn move_layers_to(&mut self, ids: &[u64], target: DropTarget) -> bool {
@@ -644,6 +752,85 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_group_copies_its_layers() {
+        let mut project = Project::new();
+        let a = project.add_layer(layer("a"));
+        let source = project.layers[a].group;
+        project.add_layer_to_group(layer("b"), source);
+        project.add_layer(layer("c"));
+        project.rename_group(source, "Engrave".to_string());
+
+        let copy = project.duplicate_group(source).unwrap();
+
+        assert_eq!(project.groups.len(), 3);
+        assert_eq!(project.group_members(source).len(), 2);
+        assert_eq!(project.group_members(copy).len(), 2);
+        assert_eq!(project.group(copy).unwrap().name, "Engrave copy");
+        assert_eq!(names(&project), vec!["a", "b", "a", "b", "c"]);
+        assert_eq!(project.group_order()[1], copy);
+        assert!(blocks_are_contiguous(&project));
+        assert!(blocks_follow_group_order(&project));
+
+        let source_ids: Vec<u64> = project
+            .group_members(source)
+            .iter()
+            .map(|i| project.layers[*i].id)
+            .collect();
+        let copy_ids: Vec<u64> = project
+            .group_members(copy)
+            .iter()
+            .map(|i| project.layers[*i].id)
+            .collect();
+        assert!(source_ids.iter().all(|id| !copy_ids.contains(id)));
+    }
+
+    #[test]
+    fn duplicate_group_copies_flags_and_keeps_members_independent() {
+        let mut project = Project::new();
+        let a = project.add_layer(layer("a"));
+        let source = project.layers[a].group;
+        project.set_group_visible(source, false);
+        project.set_group_enabled(source, false);
+
+        let copy = project.duplicate_group(source).unwrap();
+        project.set_group_members_visible(copy, true);
+        project.duplicate_group(source).unwrap();
+
+        let first = project.group(copy).unwrap();
+        assert!(!first.visible);
+        assert!(!first.enabled);
+        assert!(!project.group(source).unwrap().visible);
+        assert_eq!(project.groups.len(), 3);
+        assert!(project.layers.iter().all(|l| l.is_visible));
+        assert!(blocks_follow_group_order(&project));
+    }
+
+    #[test]
+    fn duplicated_group_gets_unique_name() {
+        let mut project = Project::new();
+        let a = project.add_layer(layer("a"));
+        let source = project.layers[a].group;
+        project.rename_group(source, "Engrave".to_string());
+
+        let one = project.duplicate_group(source).unwrap();
+        let two = project.duplicate_group(source).unwrap();
+        let three = project.duplicate_group(one).unwrap();
+
+        assert_eq!(project.group(one).unwrap().name, "Engrave copy");
+        assert_eq!(project.group(two).unwrap().name, "Engrave copy 2");
+        assert_eq!(project.group(three).unwrap().name, "Engrave copy 3");
+    }
+
+    #[test]
+    fn duplicating_missing_group_reports_nothing() {
+        let mut project = Project::new();
+        project.add_layer(layer("a"));
+
+        assert!(project.duplicate_group(9999).is_none());
+        assert_eq!(project.groups.len(), 1);
+    }
+
+    #[test]
     fn groups_survive_serialization() {
         let mut project = Project::new();
         project.add_layer(layer("a"));
@@ -675,5 +862,93 @@ mod tests {
 
         assert_eq!(restored.groups.len(), 1);
         assert!(restored.layers.iter().all(|l| l.group == restored.groups[0].id));
+    }
+
+    fn boxed(name: &str, bounds: [f64; 4]) -> Layer {
+        let mut layer = Layer::new(name.to_string(), LayerSource::Image {
+            path: String::new(),
+        });
+        layer.set_bounds(bounds[0], bounds[1], bounds[2], bounds[3]);
+        layer
+    }
+
+    fn mirrored(project: &Project) -> Vec<bool> {
+        project
+            .layers
+            .iter()
+            .map(|l| l.mirror_x || l.mirror_y)
+            .collect()
+    }
+
+    #[test]
+    fn mirror_moves_boxes_around_the_shared_center() {
+        let mut project = Project::new();
+        let left = project.add_layer(boxed("left", [0.0, 0.0, 10.0, 10.0]));
+        let right = project.add_layer(boxed("right", [20.0, 0.0, 30.0, 10.0]));
+        let ids = vec![project.layers[left].id, project.layers[right].id];
+
+        assert!(project.mirror_layers(&ids, true));
+
+        assert_eq!(project.layers[left].bounds, Some([20.0, 0.0, 30.0, 10.0]));
+        assert_eq!(project.layers[right].bounds, Some([0.0, 0.0, 10.0, 10.0]));
+        assert!(project.layers.iter().all(|l| l.mirror_x));
+        assert!(project.layers.iter().all(|l| !l.mirror_y));
+    }
+
+    #[test]
+    fn mirroring_twice_restores_bounds_and_flags() {
+        let mut project = Project::new();
+        project.add_layer(boxed("a", [0.0, 0.0, 10.0, 4.0]));
+        project.add_layer(boxed("b", [12.0, 6.0, 20.0, 9.0]));
+        let ids: Vec<u64> = project.layers.iter().map(|l| l.id).collect();
+
+        project.mirror_layers(&ids, true);
+        project.mirror_layers(&ids, true);
+
+        assert_eq!(project.layers[0].bounds, Some([0.0, 0.0, 10.0, 4.0]));
+        assert_eq!(project.layers[1].bounds, Some([12.0, 6.0, 20.0, 9.0]));
+        assert!(mirrored(&project).iter().all(|m| !m));
+    }
+
+    #[test]
+    fn mirroring_a_vector_layer_flips_its_nodes() {
+        let mut project = Project::new();
+        let mut layer = Layer::new("vector".to_string(), LayerSource::Vector);
+        let mut shape = crate::core::layer::VectorShape::default();
+        shape
+            .nodes
+            .push(crate::core::vector::PathNode::corner(0.0, 0.0));
+        shape
+            .nodes
+            .push(crate::core::vector::PathNode::corner(1.0, 0.0));
+        shape
+            .nodes
+            .push(crate::core::vector::PathNode::corner(4.0, 0.0));
+        shape.stroke.width_mm = 0.0;
+        layer.shapes.push(shape);
+        layer.recompute_bounds();
+        let index = project.add_layer(layer);
+        let id = project.layers[index].id;
+
+        assert!(project.mirror_layers(&[id], true));
+
+        let nodes: Vec<f64> = project.layers[index].shapes[0]
+            .nodes
+            .iter()
+            .map(|node| node.point.x)
+            .collect();
+
+        assert_eq!(nodes, vec![0.0, 3.0, 4.0]);
+        assert_eq!(project.layers[index].bounds, Some([0.0, 0.0, 4.0, 0.0]));
+    }
+
+    #[test]
+    fn mirroring_without_bounds_reports_nothing() {
+        let mut project = Project::new();
+        let index = project.add_layer(layer("empty"));
+        let id = project.layers[index].id;
+
+        assert!(!project.mirror_layers(&[id], true));
+        assert!(!project.layers[index].mirror_x);
     }
 }

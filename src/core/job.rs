@@ -1,9 +1,5 @@
 use crate::core::gcode::GcodeCommand;
-use crate::core::image::{
-    RasterizeOptions, engrave_layer, load_image, rasterize, rasterize_svg_into_box, svg_raster_box,
-    svg_trace,
-};
-use crate::core::layer::{EngraveMode, Layer, LayerSource, Project};
+use crate::core::layer::{Layer, LayerSource, Project, Segment, layer_segments, placement};
 use crate::core::vector_gcode::export_vector_layer;
 
 #[derive(Debug, Clone)]
@@ -77,101 +73,111 @@ pub fn build_job(
     Ok((lines, reports))
 }
 
-/// Where a layer's coordinates start. Vector shapes already carry their moved position, so
-/// only raster and segment layers are placed by their bounds.
-fn layer_origin(layer: &Layer) -> (f64, f64) {
+fn layer_commands(layer: &Layer, spindle_max: f64) -> Result<Vec<GcodeCommand>, String> {
+    let origin = placement(layer);
+
     if layer.is_vector() {
-        (0.0, 0.0)
+        return export_vector_layer(layer, &layer.params, origin, spindle_max)
+            .map_err(|e| format!("vector '{}': {}", layer.name, e));
+    }
+
+    let segments = layer_segments(layer)?;
+
+    if matches!(layer.source, LayerSource::Gerber { .. }) {
+        return Ok(gerber_commands(&segments, layer, origin, spindle_max));
+    }
+
+    Ok(segment_commands(&segments, layer, origin, spindle_max))
+}
+
+fn laser_on_command(layer: &Layer, spindle_max: f64) -> String {
+    let power = layer.params.spindle_value(spindle_max);
+    if layer.params.dynamic_power {
+        format!("M4 S{:.0}", power)
     } else {
-        layer.bounds().map(|b| (b.0, b.1)).unwrap_or((0.0, 0.0))
+        format!("M3 S{:.0}", power)
     }
 }
 
-fn layer_commands(layer: &Layer, spindle_max: f64) -> Result<Vec<GcodeCommand>, String> {
-    let origin = layer_origin(layer);
-    let width_mm = layer
-        .bounds()
-        .map(|b| (b.2 - b.0).max(1.0))
-        .unwrap_or(100.0);
-    let height_mm = layer
-        .bounds()
-        .map(|b| (b.3 - b.1).max(1.0))
-        .unwrap_or(100.0);
+fn segment_commands(
+    segments: &[Segment],
+    layer: &Layer,
+    origin: (f64, f64),
+    spindle_max: f64,
+) -> Vec<GcodeCommand> {
+    let mut cmds = Vec::new();
+    cmds.push(make_cmd("G21".to_string()));
+    cmds.push(make_cmd("G90".to_string()));
+    cmds.push(make_cmd(laser_on_command(layer, spindle_max)));
+    cmds.push(make_cmd(format!("G1 F{:.0}", layer.params.feed_rate)));
 
-    match &layer.source {
-        LayerSource::Image { path } => {
-            let loaded = load_image(std::path::Path::new(path))
-                .map_err(|e| format!("image '{}': {}", path, e))?;
-
-            let raster = rasterize(
-                &loaded.dynamic,
-                RasterizeOptions {
-                    pixels_per_mm: layer.params.pixels_per_mm,
-                    threshold: layer.params.threshold,
-                    invert: layer.params.invert,
-                },
-                Some(width_mm),
-            );
-
-            engrave_layer(&raster, &layer.params, origin, spindle_max)
-                .map_err(|e| format!("engrave '{}': {}", path, e))
+    for pass in 0..layer.params.passes.max(1) {
+        if pass > 0 {
+            cmds.push(make_cmd("; --- next pass ---".to_string()));
         }
-        LayerSource::Svg { path } => {
-            if layer.params.engrave_mode == EngraveMode::Lines {
-                let target_px = (layer.params.pixels_per_mm * width_mm)
-                    .round()
-                    .clamp(512.0, 4096.0) as u32;
 
-                let img =
-                    svg_trace::rasterize_svg_to_image(std::path::Path::new(path), target_px)
-                        .map_err(|e| format!("svg '{}': {}", path, e))?;
-
-                let paths = svg_trace::trace_image_to_paths(&img, 128);
-
-                let scale_x = width_mm / target_px as f64;
-                let scale_y =
-                    (width_mm * (img.height() as f64 / img.width() as f64)) / img.height() as f64;
-
-                Ok(svg_trace::traced_paths_to_gcode(
-                    &paths,
-                    &layer.params,
-                    origin,
-                    scale_x,
-                    scale_y,
-                    spindle_max,
-                ))
-            } else {
-                let target_px = (layer.params.pixels_per_mm * width_mm)
-                    .round()
-                    .clamp(64.0, 4096.0) as u32;
-
-                let (box_w, box_h) = svg_raster_box(width_mm, height_mm, target_px);
-                let image = rasterize_svg_into_box(std::path::Path::new(path), box_w, box_h)
-                    .map_err(|e| format!("svg '{}': {}", path, e))?;
-
-                let raster = rasterize(
-                    &image,
-                    RasterizeOptions {
-                        pixels_per_mm: layer.params.pixels_per_mm,
-                        threshold: layer.params.threshold,
-                        invert: layer.params.invert,
-                    },
-                    Some(width_mm),
-                );
-
-                engrave_layer(&raster, &layer.params, origin, spindle_max)
-                    .map_err(|e| format!("engrave '{}': {}", path, e))
-            }
+        for (x0, y0, x1, y1) in segments {
+            cmds.push(make_cmd(format!(
+                "G0 X{:.4} Y{:.4}",
+                x0 + origin.0,
+                y0 + origin.1
+            )));
+            cmds.push(make_cmd(format!(
+                "G1 X{:.4} Y{:.4}",
+                x1 + origin.0,
+                y1 + origin.1
+            )));
         }
-        LayerSource::Gcode { path } => {
-            build_gcode_layer(path, layer, spindle_max).map_err(|e| e.to_string())
-        }
-        LayerSource::Gerber { path } => {
-            build_gerber_layer(path, layer, spindle_max).map_err(|e| e.to_string())
-        }
-        LayerSource::Vector => export_vector_layer(layer, &layer.params, origin, spindle_max)
-            .map_err(|e| format!("vector '{}': {}", layer.name, e)),
     }
+
+    cmds.push(make_cmd("M5".to_string()));
+    cmds
+}
+
+fn gerber_commands(
+    segments: &[Segment],
+    layer: &Layer,
+    origin: (f64, f64),
+    spindle_max: f64,
+) -> Vec<GcodeCommand> {
+    let polylines = chain_segments(segments);
+    let laser_on = laser_on_command(layer, spindle_max);
+
+    let mut cmds = Vec::new();
+    cmds.push(make_cmd("G21".to_string()));
+    cmds.push(make_cmd("G90".to_string()));
+    cmds.push(make_cmd(format!("G1 F{:.0}", layer.params.feed_rate)));
+
+    for pass in 0..layer.params.passes.max(1) {
+        if pass > 0 {
+            cmds.push(make_cmd("; --- next pass ---".to_string()));
+        }
+
+        for polyline in &polylines {
+            let first = polyline[0];
+
+            cmds.push(make_cmd("M5".to_string()));
+            cmds.push(make_cmd(format!(
+                "G0 X{:.4} Y{:.4}",
+                first.0 + origin.0,
+                first.1 + origin.1
+            )));
+            cmds.push(make_cmd(laser_on.clone()));
+
+            for point in polyline.iter().skip(1) {
+                cmds.push(make_cmd(format!(
+                    "G1 X{:.4} Y{:.4}",
+                    point.0 + origin.0,
+                    point.1 + origin.1
+                )));
+            }
+
+            cmds.push(make_cmd("M5".to_string()));
+        }
+    }
+
+    cmds.push(make_cmd("M5".to_string()));
+    cmds
 }
 
 fn report_for_layer(index: usize, layer: &Layer, cmds: &[GcodeCommand]) -> LayerReport {
@@ -241,153 +247,6 @@ fn xy_of(raw: &str) -> Option<(f64, f64)> {
     Some((x?, y?))
 }
 
-fn build_gcode_layer(
-    path: &str,
-    layer: &Layer,
-    spindle_max: f64,
-) -> Result<Vec<GcodeCommand>, String> {
-    let content = std::fs::read_to_string(path).map_err(|e| format!("gcode '{}': {}", path, e))?;
-
-    let raw = parse_gcode_raw(&content);
-
-    if raw.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut segs = raw;
-
-    if layer.mirror_x || layer.mirror_y {
-        if let Some(center) = layer.mirror_center {
-            for s in &mut segs {
-                let (mut ax, mut ay, mut bx, mut by) = (s.0, s.1, s.2, s.3);
-                if layer.mirror_x {
-                    ax = 2.0 * center[0] - ax;
-                    bx = 2.0 * center[0] - bx;
-                }
-                if layer.mirror_y {
-                    ay = 2.0 * center[1] - ay;
-                    by = 2.0 * center[1] - by;
-                }
-                s.0 = ax;
-                s.1 = ay;
-                s.2 = bx;
-                s.3 = by;
-            }
-        }
-    }
-
-    let mut min_x = f64::INFINITY;
-    let mut min_y = f64::INFINITY;
-    for (x0, y0, x1, y1) in &segs {
-        min_x = min_x.min(*x0).min(*x1);
-        min_y = min_y.min(*y0).min(*y1);
-    }
-
-    let ox = layer.offset[0];
-    let oy = layer.offset[1];
-
-    let s_on = layer.params.spindle_value(spindle_max);
-    let laser_on = if layer.params.dynamic_power {
-        format!("M4 S{:.0}", s_on)
-    } else {
-        format!("M3 S{:.0}", s_on)
-    };
-
-    let mut cmds = Vec::new();
-    cmds.push(make_cmd("G21".to_string()));
-    cmds.push(make_cmd("G90".to_string()));
-    cmds.push(make_cmd(laser_on));
-    cmds.push(make_cmd(format!("G1 F{:.0}", layer.params.feed_rate)));
-
-    for pass in 0..layer.params.passes.max(1) {
-        if pass > 0 {
-            cmds.push(make_cmd("; --- next pass ---".to_string()));
-        }
-        for (x0, y0, x1, y1) in &segs {
-            cmds.push(make_cmd(format!(
-                "G0 X{:.4} Y{:.4}",
-                x0 - min_x + ox,
-                y0 - min_y + oy
-            )));
-            cmds.push(make_cmd(format!(
-                "G1 X{:.4} Y{:.4}",
-                x1 - min_x + ox,
-                y1 - min_y + oy
-            )));
-        }
-    }
-
-    cmds.push(make_cmd("M5".to_string()));
-
-    Ok(cmds)
-}
-
-/// Turns a Gerber file into laser moves.
-///
-/// Segments that share an endpoint are chained into polylines first, so the laser is
-/// switched on once per continuous trace instead of once per segment.
-fn build_gerber_layer(
-    path: &str,
-    layer: &Layer,
-    spindle_max: f64,
-) -> Result<Vec<GcodeCommand>, String> {
-    let segments = crate::core::image::parse_gerber_segments(std::path::Path::new(path))
-        .map_err(|e| format!("gerber '{}': {}", path, e))?;
-
-    if segments.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let polylines = chain_segments(&segments);
-
-    let ox = layer.offset[0];
-    let oy = layer.offset[1];
-
-    let s_on = layer.params.spindle_value(spindle_max);
-    let laser_on = if layer.params.dynamic_power {
-        format!("M4 S{:.0}", s_on)
-    } else {
-        format!("M3 S{:.0}", s_on)
-    };
-
-    let mut cmds = Vec::new();
-    cmds.push(make_cmd("G21".to_string()));
-    cmds.push(make_cmd("G90".to_string()));
-    cmds.push(make_cmd(format!("G1 F{:.0}", layer.params.feed_rate)));
-
-    for pass in 0..layer.params.passes.max(1) {
-        if pass > 0 {
-            cmds.push(make_cmd("; --- next pass ---".to_string()));
-        }
-
-        for polyline in &polylines {
-            let first = polyline[0];
-
-            cmds.push(make_cmd("M5".to_string()));
-            cmds.push(make_cmd(format!(
-                "G0 X{:.4} Y{:.4}",
-                first.0 + ox,
-                first.1 + oy
-            )));
-            cmds.push(make_cmd(laser_on.clone()));
-
-            for point in polyline.iter().skip(1) {
-                cmds.push(make_cmd(format!(
-                    "G1 X{:.4} Y{:.4}",
-                    point.0 + ox,
-                    point.1 + oy
-                )));
-            }
-
-            cmds.push(make_cmd("M5".to_string()));
-        }
-    }
-
-    cmds.push(make_cmd("M5".to_string()));
-
-    Ok(cmds)
-}
-
 /// Joins segments whose end point is the next segment's start point.
 fn chain_segments(segments: &[(f64, f64, f64, f64)]) -> Vec<Vec<(f64, f64)>> {
     const EPS: f64 = 1e-9;
@@ -420,54 +279,6 @@ fn chain_segments(segments: &[(f64, f64, f64, f64)]) -> Vec<Vec<(f64, f64)>> {
     }
 
     polylines
-}
-
-fn parse_gcode_raw(content: &str) -> Vec<(f64, f64, f64, f64)> {
-    let mut raw = Vec::new();
-    let mut cur = (0.0f64, 0.0f64);
-    let mut mode_rapid = false;
-
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with(';') {
-            continue;
-        }
-
-        let mut nx = None;
-        let mut ny = None;
-        let mut seen_g = None;
-
-        for tok in line.split_whitespace() {
-            if let Some(rest) = tok.strip_prefix('G') {
-                if let Ok(g) = rest.parse::<u32>() {
-                    seen_g = Some(g);
-                }
-            } else if let Some(rest) = tok.strip_prefix('X') {
-                nx = rest.parse::<f64>().ok();
-            } else if let Some(rest) = tok.strip_prefix('Y') {
-                ny = rest.parse::<f64>().ok();
-            }
-        }
-
-        if let Some(g) = seen_g {
-            if g == 0 {
-                mode_rapid = true;
-            } else if g == 1 || g == 2 || g == 3 {
-                mode_rapid = false;
-            }
-        }
-
-        let px = nx.unwrap_or(cur.0);
-        let py = ny.unwrap_or(cur.1);
-
-        if !mode_rapid && (px != cur.0 || py != cur.1) {
-            raw.push((cur.0, cur.1, px, py));
-        }
-
-        cur = (px, py);
-    }
-
-    raw
 }
 
 fn make_cmd(raw: String) -> GcodeCommand {
@@ -647,5 +458,125 @@ mod tests {
         let (lines, _) = build_job(&project, 1000.0, Some(true)).unwrap();
 
         assert!(lines.iter().any(|line| line == "M4 S500"));
+    }
+
+    #[test]
+    fn power_scales_with_the_controller_full_scale() {
+        let dir = temp_dir("power-scale");
+
+        let path = write_png(&dir, "solid.png", 32, 32, |_, _| 0);
+
+        let mut project = Project::new();
+        let mut layer = image_layer(&path, [0.0, 0.0, 8.0, 8.0], 4.0);
+        layer.params.power_percent = 25.0;
+        project.add_layer(layer);
+
+        let (lines, _) = build_job(&project, 4000.0, None).unwrap();
+
+        assert!(lines.iter().any(|line| line == "M4 S1000"));
+    }
+
+    #[test]
+    fn image_layer_is_engraved_at_its_bounds() {
+        let dir = temp_dir("image-bounds");
+
+        let path = write_png(&dir, "solid.png", 8, 8, |_, _| 0);
+
+        let mut project = Project::new();
+        project.add_layer(image_layer(&path, [12.0, 7.0, 20.0, 15.0], 4.0));
+
+        let (lines, _) = build_job(&project, 1000.0, None).unwrap();
+
+        assert!(
+            lines.iter().any(|line| line == "G0 X12.0000 Y7.0000"),
+            "{:?}",
+            lines
+        );
+    }
+
+    fn write_svg(dir: &Path, name: &str) -> String {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="10mm" height="10mm" viewBox="0 0 10 10"><rect x="0" y="0" width="10" height="10" fill="white"/><rect x="0" y="0" width="1" height="10" fill="black"/><rect x="8" y="0" width="2" height="10" fill="black"/></svg>"##;
+        let path = dir.join(name);
+        std::fs::write(&path, svg).unwrap();
+        path.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn mirrored_svg_is_engraved_mirrored() {
+        let dir = temp_dir("svg-mirror");
+
+        let path = write_svg(&dir, "part.svg");
+
+        let mut project = Project::new();
+        let mut layer = Layer::new("svg".to_string(), LayerSource::Svg {
+            path: path.clone(),
+        });
+        layer.set_bounds(0.0, 0.0, 10.0, 10.0);
+        layer.params.pixels_per_mm = 8.0;
+        project.add_layer(layer);
+        let id = project.layers[0].id;
+
+        let (plain, _) = build_job(&project, 1000.0, None).unwrap();
+        let plain_x = move_x_values(&plain);
+        assert!(has_value(&plain_x, 8.0), "{:?}", plain_x);
+        assert!(!has_value(&plain_x, 2.0), "{:?}", plain_x);
+
+        assert!(project.mirror_layers(&[id], true));
+        let (mirrored, _) = build_job(&project, 1000.0, None).unwrap();
+        let mirrored_x = move_x_values(&mirrored);
+
+        assert!(has_value(&mirrored_x, 2.0), "{:?}", mirrored_x);
+        assert!(!has_value(&mirrored_x, 8.0), "{:?}", mirrored_x);
+    }
+
+    fn has_value(values: &[f64], expected: f64) -> bool {
+        values.iter().any(|value| (value - expected).abs() < 0.3)
+    }
+
+    fn move_x_values(lines: &[String]) -> Vec<f64> {
+        lines
+            .iter()
+            .filter(|line| line.starts_with("G0 X") || line.starts_with("G1 X"))
+            .filter_map(|line| {
+                line.split_whitespace()
+                    .find_map(|token| token.strip_prefix('X'))
+                    .and_then(|value| value.parse::<f64>().ok())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn mirrored_gcode_is_engraved_mirrored() {
+        let dir = temp_dir("gcode-mirror");
+
+        let path = dir.join("part.nc");
+        std::fs::write(&path, "G21\nG90\nG0 X0 Y0\nG1 X0 Y1\nG1 X2 Y1\n").unwrap();
+
+        let mut project = Project::new();
+        let mut layer = Layer::new("gcode".to_string(), LayerSource::Gcode {
+            path: path.to_string_lossy().to_string(),
+        });
+        layer.set_bounds(0.0, 0.0, 2.0, 1.0);
+        project.add_layer(layer);
+
+        let (plain, _) = build_job(&project, 1000.0, None).unwrap();
+        assert_eq!(cut_x_values(&plain), vec![0.0, 2.0]);
+
+        project.layers[0].mirror_x = true;
+        let (mirrored, _) = build_job(&project, 1000.0, None).unwrap();
+
+        assert_eq!(cut_x_values(&mirrored), vec![2.0, 0.0]);
+    }
+
+    fn cut_x_values(lines: &[String]) -> Vec<f64> {
+        lines
+            .iter()
+            .filter(|line| line.starts_with("G1 X"))
+            .filter_map(|line| {
+                line.split_whitespace()
+                    .find_map(|token| token.strip_prefix('X'))
+                    .and_then(|value| value.parse::<f64>().ok())
+            })
+            .collect()
     }
 }

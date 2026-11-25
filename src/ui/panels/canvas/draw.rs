@@ -1,7 +1,7 @@
 use egui::{Color32, Painter, Pos2, Rect, Stroke};
 
 use crate::core::image::{rasterize_svg_into_box, svg_raster_box};
-use crate::core::layer::{Layer, LayerSource};
+use crate::core::layer::{Layer, LayerSource, placement};
 use crate::core::vector::VectorPath;
 use crate::ui::selection::HandleKind;
 use crate::ui::{
@@ -306,6 +306,17 @@ fn segment_visible(a: Pos2, b: Pos2, view: Rect, pad: f32) -> bool {
     max_x >= view.min.x && min_x <= view.max.x && max_y >= view.min.y && min_y <= view.max.y
 }
 
+/// Texture coordinates that flip the bitmap to match the layer's mirror flags.
+///
+/// Image and SVG layers are drawn as a texture, so the mirror is applied here instead of
+/// rebuilding the texture.
+fn texture_uv(mirror_x: bool, mirror_y: bool) -> Rect {
+    let (u_min, u_max) = if mirror_x { (1.0, 0.0) } else { (0.0, 1.0) };
+    let (v_min, v_max) = if mirror_y { (1.0, 0.0) } else { (0.0, 1.0) };
+
+    Rect::from_min_max(Pos2::new(u_min, v_min), Pos2::new(u_max, v_max))
+}
+
 /// Draws a segment based layer (G-code).
 ///
 /// Thousands of separate line shapes per frame are far too expensive, so the layer is
@@ -326,8 +337,7 @@ fn draw_segment_layer(
         return;
     };
 
-    let ox = layer.offset[0];
-    let oy = layer.offset[1];
+    let (ox, oy) = placement(layer);
 
     let p0 = transform.to_screen(min_x + ox, max_y + oy);
     let p1 = transform.to_screen(max_x + ox, min_y + oy);
@@ -506,7 +516,7 @@ fn draw_layer(
         painter.image(
             texture.id(),
             rect,
-            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+            texture_uv(layer.mirror_x, layer.mirror_y),
             if layer_selected {
                 Color32::from_rgba_unmultiplied(255, 255, 255, 200)
             } else {

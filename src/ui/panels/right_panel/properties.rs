@@ -219,11 +219,7 @@ impl LaserApp {
 }
 
 /// Where the object sits on the workbed: the lower-left corner of its bounds, which is what
-/// the canvas draws, measures and hit-tests. A layer without bounds (an empty vector layer)
-/// falls back to its accumulated offset.
+/// the canvas draws, measures and hit-tests.
 fn layer_position(layer: &Layer) -> (f64, f64) {
-    layer
-        .bounds()
-        .map(|b| (b.0, b.1))
-        .unwrap_or((layer.offset[0], layer.offset[1]))
+    layer.bounds().map(|b| (b.0, b.1)).unwrap_or((0.0, 0.0))
 }

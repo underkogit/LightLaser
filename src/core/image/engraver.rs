@@ -1,6 +1,5 @@
 use std::fmt;
 
-use crate::core::gcode::GcodeCommand;
 use crate::core::image::raster::RasterImage;
 use crate::core::layer::LayerParams;
 
@@ -123,61 +122,6 @@ fn run_segment(origin_x: f64, y: f64, lo: u32, hi: u32, step_x: f64) -> EngraveS
     }
 }
 
-pub fn engrave_layer(
-    raster: &RasterImage,
-    params: &LayerParams,
-    origin: (f64, f64),
-    spindle_max: f64,
-) -> Result<Vec<GcodeCommand>, EngraveError> {
-    let segs = engrave_segments(raster, params, origin)?;
-
-    let feed = params.feed_rate;
-    let s_on = params.spindle_value(spindle_max);
-
-    let laser_on_cmd = if params.dynamic_power {
-        format!("M4 S{:.0}", s_on)
-    } else {
-        format!("M3 S{:.0}", s_on)
-    };
-
-    let mut cmds: Vec<GcodeCommand> = Vec::new();
-
-    cmds.push(make_cmd("G21 ; mm".to_string()));
-    cmds.push(make_cmd("G90 ; absolute".to_string()));
-    cmds.push(make_cmd(laser_on_cmd));
-    cmds.push(make_cmd(format!("G1 F{:.0}", feed)));
-
-    for pass in 1..params.passes.max(1) {
-        cmds.push(make_cmd(format!("; --- pass {} ---", pass + 1)));
-    }
-
-    for s in segs {
-        cmds.push(make_cmd(format!("G0 X{:.4} Y{:.4}", s.x0, s.y0)));
-        cmds.push(make_cmd(format!("G1 X{:.4} Y{:.4}", s.x1, s.y1)));
-    }
-
-    cmds.push(make_cmd("M5 ; laser off".to_string()));
-    cmds.push(make_cmd("G0 X0 Y0 ; return home".to_string()));
-
-    Ok(cmds)
-}
-
-fn make_cmd(raw: String) -> GcodeCommand {
-    GcodeCommand {
-        raw,
-        line_number: None,
-        motion: None,
-        x: None,
-        y: None,
-        z: None,
-        i: None,
-        j: None,
-        feed: None,
-        spindle: None,
-        comment: None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,31 +139,23 @@ mod tests {
         }
     }
 
-    fn laser_command(cmds: &[GcodeCommand]) -> String {
-        cmds.iter()
-            .map(|c| c.raw.clone())
-            .find(|raw| raw.starts_with("M3") || raw.starts_with("M4"))
-            .expect("job carries a laser command")
+    #[test]
+    fn every_dark_run_becomes_one_segment() {
+        let params = LayerParams::default();
+        let segments = engrave_segments(&dark_raster(), &params, (0.0, 0.0)).unwrap();
+
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].x0, 0.0);
+        assert!(segments[0].x1 > 0.0);
     }
 
     #[test]
-    fn power_is_mapped_onto_the_controller_full_scale() {
+    fn passes_repeat_the_segments() {
         let mut params = LayerParams::default();
-        params.power_percent = 25.0;
+        params.passes = 3;
 
-        let grbl = engrave_layer(&dark_raster(), &params, (0.0, 0.0), 1000.0).unwrap();
-        assert_eq!(laser_command(&grbl), "M4 S250");
+        let segments = engrave_segments(&dark_raster(), &params, (0.0, 0.0)).unwrap();
 
-        let scaled = engrave_layer(&dark_raster(), &params, (0.0, 0.0), 4000.0).unwrap();
-        assert_eq!(laser_command(&scaled), "M4 S1000");
-    }
-
-    #[test]
-    fn constant_power_emits_m3() {
-        let mut params = LayerParams::default();
-        params.dynamic_power = false;
-
-        let cmds = engrave_layer(&dark_raster(), &params, (0.0, 0.0), 1000.0).unwrap();
-        assert_eq!(laser_command(&cmds), "M3 S500");
+        assert_eq!(segments.len(), 3);
     }
 }

@@ -2,9 +2,10 @@ use egui::{Align, Layout, Sense};
 use rust_i18n::t;
 
 use super::LayerAction;
-use crate::core::layer::GroupId;
+use crate::core::layer::{GroupId, LayerSource};
 use crate::ui::LaserApp;
 use crate::ui::panels::right_panel::{GroupRename, LayerRowDrag};
+use crate::ui::project_io::FileKind;
 
 const ROW_HEIGHT: f32 = 22.0;
 const COUNT_WIDTH: f32 = 34.0;
@@ -12,6 +13,7 @@ const COUNT_WIDTH: f32 = 34.0;
 pub(super) struct LayerRow {
     pub(super) id: u64,
     pub(super) name: String,
+    pub(super) source: LayerSource,
     pub(super) visible: bool,
     pub(super) enabled: bool,
     pub(super) selected: bool,
@@ -164,6 +166,10 @@ impl LaserApp {
                                     actions.push(LayerAction::SelectGroup(group.id));
                                     ui.close();
                                 }
+                                if ui.button(t!("ui.menu.group_duplicate")).clicked() {
+                                    actions.push(LayerAction::DuplicateGroup(group.id));
+                                    ui.close();
+                                }
                                 let all_visible = !group.members.is_empty()
                                     && group.members.iter().all(|member| member.visible);
                                 let toggle_label = if all_visible {
@@ -294,7 +300,27 @@ impl LaserApp {
                             });
                         }
 
-                        area_response.on_hover_text(layer.name.clone());
+                        let replaceable = FileKind::of(&layer.source).is_some();
+                        area_response.context_menu(|ui| {
+                            if replaceable
+                                && ui
+                                    .button(t!("ui.menu.layer_replace"))
+                                    .on_hover_text(t!("ui.tooltip.layer_replace"))
+                                    .clicked()
+                            {
+                                actions.push(LayerAction::ReplaceLayer(layer.id));
+                                ui.close();
+                            }
+                            if replaceable {
+                                ui.separator();
+                            }
+                            if ui.button(t!("ui.menu.layer_delete")).clicked() {
+                                actions.push(LayerAction::RemoveLayer(layer.id));
+                                ui.close();
+                            }
+                        });
+
+                        area_response.on_hover_text(hover_text(&layer.name, &layer.source));
                     });
                 });
             })
@@ -362,5 +388,15 @@ fn drag_label(name: &str, count: usize) -> String {
         format!("{name} +{}", count - 1)
     } else {
         name.to_string()
+    }
+}
+
+fn hover_text(name: &str, source: &LayerSource) -> String {
+    match source {
+        LayerSource::Image { path }
+        | LayerSource::Svg { path }
+        | LayerSource::Gcode { path }
+        | LayerSource::Gerber { path } => format!("{name}\n{path}"),
+        LayerSource::Vector => name.to_string(),
     }
 }

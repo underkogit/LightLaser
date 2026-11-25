@@ -21,9 +21,21 @@ canvas, then streams the resulting G-code to a GRBL-based laser controller over 
   layer. The group checkboxes hide or disable the whole group without touching the per-layer
   checkboxes. Layers are moved between groups by dragging them in the panel, which is also the
   only way to change the engraving order. A layer added while no group exists gets one named
-  `Group 1`, `Group 2`, and so on.
+  `Group 1`, `Group 2`, and so on. `Duplicate group` in the group context menu inserts a copy of
+  the group and all of its layers right below the original, with fresh ids and the same flags,
+  shifted by one snap step so the copy is visible on the canvas.
+- Layers imported from a file can have that file replaced: the layer context menu offers
+  `Replace file…`, which opens a picker filtered to the layer's own format. The layer keeps its
+  group, visibility, enabled state and parameters; its name comes from the new file, its size
+  from the rules of that format (an image keeps its previous width), and its lower-left corner
+  stays where it was. A file that fails to parse leaves the layer untouched. Undo covers the
+  replacement.
 - Vector drawing tools: line, curve, rectangle, circle, plus node and handle editing.
-- Move, rubber-band select, mirror, round-to-step, copy, paste, duplicate, delete.
+- Move, rubber-band select, round-to-step, copy, paste, duplicate, delete.
+- `Mirror X` / `Mirror Y` in the canvas context menu work on every layer type: images, SVG
+  (both raster and traced), G-code, Gerber and vector. The content flips in place and, when
+  several layers are selected, each box also mirrors about the centre of the selection. Two
+  mirrors in a row return the layer to its original state.
 - Undo and redo for canvas edits and for layer position edits (see limitations for
   exceptions).
 - Drag and drop files onto the window; the extension selects the importer.
@@ -141,9 +153,13 @@ cargo run --release
 | Image | Rasterized at the layer's px/mm and thresholded | power, feed, passes, px/mm, threshold, invert |
 | SVG (raster) | Rendered into the layer box, then engraved as a raster | same as image |
 | SVG (lines) | Rasterized, thinned, traced, simplified | power, feed, passes, px/mm |
-| G-code | Parsed into XY moves | power, feed, passes, mirror |
+| G-code | Parsed into XY moves | power, feed, passes |
 | Gerber | Parsed and flattened into polylines | power, feed, passes |
 | Vector | Flattened from the layer's node paths | power, feed, passes, closed (line width affects bounds only) |
+
+Mirroring applies to the geometry, not to the file: an SVG is flipped before it is rendered or
+traced, a G-code or Gerber file is flipped in its parsed segments, and a vector layer mirrors
+its nodes. The result is the same picture on the bed and in the preview, before and after a job.
 
 ## Project files
 
@@ -154,9 +170,9 @@ Projects are TOML documents containing:
   the whole job runs.
 - Layer groups in panel order, each with the group name, collapsed state, and its own
   visibility and enabled switches. Empty groups are kept.
-- Layers with source type, visibility, enabled state, parameters, bounds, vector
-  shapes, offset, and mirror settings. Each layer carries a stable `id`, the `group` it
-  belongs to, and its position in the list is its engraving order.
+- Layers with source type, visibility, enabled state, parameters, bounds, vector shapes,
+  and mirror flags. Each layer carries a stable `id`, the `group` it belongs to, and its
+  position in the list is its engraving order.
 
 Loading a project with a different version logs a warning and continues. Projects written
 before groups existed are upgraded on load: all of their layers end up in a single group,
@@ -228,6 +244,10 @@ runs but leaves no marks is usually a controller or material setting. Check in t
 - The theme selector is stored but not applied; the interface uses the default egui visuals.
 - The window size is saved but not restored; the window opens at 1200 × 720.
 - `Dither` is stored, serialised, and shown in the UI, but the rasterizer ignores it.
+- `Mirror X`/`Mirror Y` flips the drawing inside the layer's own box, so a single mirrored layer
+  keeps its position; only a multi-layer selection moves the boxes around the shared centre.
+- A transparent SVG or PNG background is read as black, so a layer without an explicit white
+  background burns its whole box.
 - Undo covers canvas edits, layer position edits, and the layer list: dragging a layer onto
   another group or another layer inside one group, deleting a layer or a group, renaming a
   group, creating a group, hiding or showing the layers of a group from its menu, and the

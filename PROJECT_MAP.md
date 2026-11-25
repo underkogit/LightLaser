@@ -83,7 +83,9 @@ points 208 (1%). The three largest files are `core/image/gerber.rs` (832),
 
 | Path | Responsibility |
 | --- | --- |
-| `core/job.rs` | `build_job(project, spindle_max, laser_mode)` → `(Vec<String>, Vec<LayerReport>)`: the whole document as one G-code program plus a per-layer diagnostic (power, feed, moves, cut length); the segment builder for `Gcode`/`Gerber` sources lives here too |
+| `core/job.rs` | `build_job(project, spindle_max, laser_mode)` → `(Vec<String>, Vec<LayerReport>)`: the whole document as one G-code program plus a per-layer diagnostic (power, feed, moves, cut length) |
+| `core/layer/geometry.rs` | The single source of layer geometry: `layer_segments(layer)` → mirrored, origin-anchored segments for image, SVG, G-code, Gerber, and vector layers; `placement(layer)` → where those segments sit on the bed |
+| `core/mirror.rs` | Mirroring primitives: `flip_image` (raster), `flip_segments` (flips about the geometry's own centre), `bounds` |
 | `core/layer/project.rs` | `Project` (`version`, `name`, `layers`, `groups`, `machine`); `PROJECT_VERSION = 1`; group and layer ordering, id allocation, `normalize` |
 | `core/layer/group.rs` | `LayerGroup` (id, name, colour, collapsed, `visible`, `enabled`), `GroupId`, `DropTarget` |
 | `core/layer/layer.rs` | `Layer` (with stable `id` and `group`), `LayerParams`, `LayerSource`, `VectorShape`, `EngraveMode`, `LayerUnit`; bounds and translate helpers |
@@ -92,14 +94,14 @@ points 208 (1%). The three largest files are `core/image/gerber.rs` (832),
 | `core/tools/` | Drawing tools behind the `Tool` trait: select, line, curve, rect, circle; tool events and previews |
 | `core/vector_gcode.rs` | Vector layer → `GcodeCommand` list (flatten, laser on/off, passes) |
 | `core/gcode/parser.rs` | Line parser into `GcodeCommand` fields (only `raw` is consumed downstream) |
-| `core/gcode/segments.rs` | G-code text → XY segments, mirroring, normalization to origin |
+| `core/gcode/segments.rs` | G-code text → XY segments, normalization to origin |
 | `core/gcode/stream.rs` | `GcodeStream`: line iterator (not used by the app) |
 | `core/image/loader.rs` | `image::open` wrapper with aspect ratio |
 | `core/image/raster.rs` | `RasterizeOptions`, `RasterImage`, resize to px/mm, vertical flip, `is_dark` |
-| `core/image/engraver.rs` | Raster → horizontal runs (`EngraveSegment`) and → `GcodeCommand` list |
+| `core/image/engraver.rs` | Raster → horizontal runs (`EngraveSegment`) |
 | `core/image/svg_size.rs` | Reads `width`/`height`/`viewBox` from SVG headers; unit and PCB profiles |
 | `core/image/svg_raster.rs` | Renders SVG into an exact pixel box with uniform scale |
-| `core/image/svg_trace.rs` | Rasterizes SVG, Zhang-Suen thinning, path tracing, RDP simplification, G-code |
+| `core/image/svg_trace.rs` | Rasterizes SVG, Zhang-Suen thinning, path tracing, RDP simplification |
 | `core/image/svg_vector.rs` | SVG path extraction and outline G-code (alternate, unused path) |
 | `core/image/gerber.rs` | Gerber document walk, apertures, macros, arcs, clipper2 union/stroke → segments |
 | `core/image/palette.rs` | Palette extraction (unused) |
@@ -111,7 +113,7 @@ points 208 (1%). The three largest files are `core/image/gerber.rs` (832),
 | --- | --- |
 | `ui/mod.rs` | `LaserApp` state, keyboard shortcuts, drag-and-drop routing, panel layout, copy/paste/duplicate |
 | `ui/app_config.rs` | `AppConfig` (`app_config.toml`): locale, scale, grid, console font, UI font, SVG profile, window size, theme |
-| `ui/project_io.rs` | New/open/save/save-as, layer import helpers, G-code bounds scan |
+| `ui/project_io.rs` | New/open/save/save-as, layer import and file replacement via `FileKind` (dialog filter, source, bounds), G-code and Gerber bounds scans |
 | `ui/history.rs` | Undo/redo stacks of whole `Project` clones (limit 100) |
 | `ui/selection.rs` | Index-based selection state and hit-testing helpers |
 | `ui/tools_state.rs` | Active tool, tool dispatch, fixed 1 mm snapping |
@@ -147,8 +149,7 @@ Project
     │   └── engrave_mode: Raster | Lines (SVG only)
     ├── bounds: Option<[min_x, min_y, max_x, max_y]>   world millimetres
     ├── shapes: Vec<VectorShape>                       vector layers only
-    ├── offset: [dx, dy]                               placement for segment/vector sources
-    └── mirror_x, mirror_y, mirror_center
+    └── mirror_x, mirror_y                             content mirror flags
 ```
 
 Groups are blocks, not tags: every group's layers occupy one contiguous range of `layers`, and
@@ -168,13 +169,19 @@ the layer flags.
 
 Layer sources split into two families:
 
-* **Raster-backed** (`Image`, `Svg` in raster mode): the source is a file, the layer's
-  `bounds` are authoritative for placement and size; `offset` is not used when drawing.
-* **Segment-backed** (`Gcode`, `Gerber`, `Svg` in lines mode): geometry is generated from the
-  file; `bounds` describes the world extent, and `offset` is applied on top when drawing and
-  when emitting G-code.
+* **File-backed** (`Image`, `Svg`, `Gcode`, `Gerber`): `core::layer::geometry::layer_segments`
+  turns the file into segments starting at the origin, and `placement(layer)` puts them on the
+  bed at the lower-left corner of `bounds`. Moving a layer only moves `bounds`, so the geometry
+  is cached across drags and rebuilt only when the file, the parameters, or the mirror flags
+  change.
 * **Vector**: the node coordinates themselves are the world geometry, so `shapes` are drawn
-  and emitted as they are and `offset` is ignored; `Layer::translate` moves the nodes.
+  and emitted as they are and `placement` is `(0, 0)`; `Layer::translate` moves the nodes.
+
+Mirroring is part of the geometry: `Image` and `Svg` flip their raster before rasterizing or
+tracing, `Gcode` and `Gerber` flip their parsed segments about the geometry's own centre, and
+vector layers mirror their nodes. `Layer::mirror` toggles the flag and mirrors `bounds` about the
+selection centre, so a multi-layer selection mirrors as one picture while each layer flips in
+place.
 
 Other long-lived UI state: `CanvasState` (zoom, pan, drag mode, texture/segment caches,
 preview and G-code windows), `Selection` (layer/shape/node/handle indices), `History`,
@@ -196,17 +203,19 @@ preview and G-code windows), `Selection` (layer/shape/node/handle indices), `His
    it returns the G-code lines plus one `LayerReport` per emitted layer.
 2. Header: `G21`, `G90`, `G17`.
 3. Outer loop over `machine.passes` repeats the whole job.
-4. For each layer whose `Project::layer_enabled` is true (visibility is ignored here), compute
-   origin and size and branch on `LayerSource`:
-   * `Image` → `load_image` → `rasterize` (px/mm, threshold, invert) → `engrave_layer`.
-   * `Svg`, `EngraveMode::Lines` → `svg_trace::rasterize_svg_to_image` (512–4096 px) →
-     `trace_image_to_paths(128)` → `traced_paths_to_gcode` with X/Y scale factors.
-   * `Svg`, raster mode → `svg_raster_box` (64–4096 px) → `rasterize_svg_into_box` →
-     `rasterize` → `engrave_layer`.
-   * `Gcode` → read text → segment parser in `core/job.rs` → mirror → normalize to min → `G0`/`G1`.
-   * `Gerber` → `parse_gerber_segments` → `chain_segments` into polylines → `G0`/`G1`.
+4. For each layer whose `Project::layer_enabled` is true (visibility is ignored here), take
+   `core::layer::geometry::layer_segments` and add `placement` to every coordinate:
+   * `Image` → `load_image` → flip if mirrored → `rasterize` (px/mm, threshold, invert) →
+     `engrave_segments`.
+   * `Svg`, `EngraveMode::Lines` → `svg_trace::rasterize_svg_to_image` (512–4096 px) → flip if
+     mirrored → `trace_image_to_paths(128)` → segments scaled by X/Y factors.
+   * `Svg`, raster mode → `svg_raster_box` (64–4096 px) → `rasterize_svg_into_box` → flip if
+     mirrored → `rasterize` → `engrave_segments`.
+   * `Gcode` → segment parser → flip if mirrored → normalize to min.
+   * `Gerber` → `parse_gerber_segments` → flip if mirrored → `chain_segments` into polylines.
    * `Vector` → `export_vector_layer` → flatten at 0.05 mm → `G0`/`G1`.
-5. After each layer: `M5`. After the job: `G0 X0 Y0`, `M5`.
+5. `Image`, `Svg`, and `Gcode` emit one laser-on header and `G0`/`G1` per segment; `Gerber`
+   switches the laser per polyline. After each layer: `M5`. After the job: `G0 X0 Y0`, `M5`.
 6. If the controller reported `$32=0`, every `M4` is rewritten to `M3`: without laser mode the
    blade of dynamic power does nothing and `M3` (spindle CW) is the command that actually
    switches a diode module on.
@@ -263,7 +272,7 @@ processed prefix of the segment list.
 ## Persistence and localisation
 
 * **Project** (`*.toml`, `Project`): version, name, machine, groups, layers with id, group,
-  source, colour, flags, params, bounds, shapes, offset, mirror fields. Version mismatch only
+  source, colour, flags, params, bounds, shapes, mirror flags. Version mismatch only
   logs a warning; `load_project_from` calls `Project::normalize` afterwards.
 * **App config** (`<exe>/config/app_config.toml`, `AppConfig`): window size, locale, theme,
   grid/axes/work-area toggles, grid step, UI scale, console font size, optional UI font
@@ -277,16 +286,17 @@ processed prefix of the segment list.
 
 | Task | Touch |
 | --- | --- |
-| Add an imported file type | `LayerSource` and `Layer::is_raster` (`core/layer/layer.rs`); `ui/project_io.rs`; drag-and-drop match in `ui/mod.rs`; import menu in `ui/panels/top_bar.rs`; builder branch in `ui/widget/job.rs`; `cache.rs` and `preview_window.rs` |
-| Add a layer parameter | `LayerParams` (`core/layer/layer.rs`), properties UI (`right_panel/properties.rs`), the parameter application block there, and any consumer (`engraver.rs`, `vector_gcode.rs`, `job.rs`) |
+| Add an imported file type | `LayerSource` and `Layer::is_raster` (`core/layer/layer.rs`); `ui/project_io.rs`; drag-and-drop match in `ui/mod.rs`; import menu in `ui/panels/top_bar.rs`; a branch in `core/layer/geometry.rs` (mirroring included) |
+| Add a layer parameter | `LayerParams` (`core/layer/layer.rs`), properties UI (`right_panel/properties.rs`), the parameter application block there, and any consumer (`geometry.rs`, `vector_gcode.rs`, `job.rs`) |
 | Add a drawing tool | `core/tools/<name>.rs` + `ToolKind`/icon/tooltip in `core/tools/tool.rs` + `ToolsState` (`ui/tools_state.rs`) + input dispatch (`canvas/input.rs`) |
-| Change emitted G-code for a source | `core/job.rs` for how a layer is placed and emitted; `core/image/engraver.rs`, `core/vector_gcode.rs`, `core/image/svg_trace.rs` for the source generators |
-| Change what the canvas shows | `ui/panels/canvas/draw.rs`; segment generation in `canvas/cache.rs` |
+| Change emitted G-code for a source | `core/job.rs` for how segments become `G0`/`G1`; `core/layer/geometry.rs` for what the source generates; `core/vector_gcode.rs` for vector layers |
+| Change what the canvas shows | `ui/panels/canvas/draw.rs`; segment generation in `core/layer/geometry.rs` |
 | Add a UI string | `locales/en.toml` and `locales/ru.toml` (keep keys identical), then `t!("…")` at the call site |
 | Add an app setting | `ui/app_config.rs` field + default + settings UI (`widget/settings_window.rs`), then read it from `LaserApp` |
 | Add a controller command | `comm/grbl.rs` method, `StreamerCommand` + handler in `comm/streamer.rs`, button in `right_panel/machine.rs` or `jog_crosshair.rs` |
 | Change undo behaviour | `ui/history.rs` plus every `push_history` call site (search `push_history`) |
 | Add a group action | `LayerAction` + `apply_layer_actions` in `ui/panels/right_panel/layers/mod.rs`, the matching `Project` method in `core/layer/project.rs`, and the header widget in `group_header` (`layers/row.rs`) |
+| Add a layer action | `LayerAction` + `apply_layer_actions` (`layers/mod.rs`) and a button or context-menu entry in `layer_row` (`layers/row.rs`). Layer rows get `LayerSource` and decide there whether a file action applies |
 | Change group ordering | `Project::group_block` / `group_order` / `group_insert_index` / `move_layers_to` / `compact_groups` in `core/layer/project.rs`; the panel only reports a `DropTarget` |
 | Change how rows drag | `ui/panels/right_panel/layers/`: `row.rs` starts a `LayerRowDrag` on a press, `drop.rs` maps the pointer to a `DropTarget` and paints the indicator and ghost, `mod.rs` turns the release at the end of `ui_layer_list` into a `LayerAction::Drop`. Nothing relies on egui's built-in drag-and-drop payloads |
 
@@ -307,18 +317,30 @@ processed prefix of the segment list.
   group flag with the layer flag.
 * Selecting a group means selecting all of its layer indices; the canvas drag path
   (`collect_drag_states`) then moves them together with no extra code.
-* There are three independent segment builders (live job, canvas cache, preview). They must
-  produce the same geometry for the same layer; today they do not in all cases.
-* A layer carries world position in `bounds`, `offset`, and (for vector layers) node
-  coordinates at once. `Layer::translate` updates all three. The job builder places raster and
-  segment layers by `bounds`, segment layers also add `offset`, and vector layers use the node
-  coordinates alone (`core::job::layer_origin`), which is what the canvas draws.
+* There is one segment builder, `core::layer::geometry::layer_segments`; the job builder, the
+  canvas cache, and the preview all call it, so a layer looks the same everywhere. Placement is
+  a separate step (`placement`), which is what makes dragging cheap: the geometry is cached by
+  source, parameters, size, and mirror flags, and only the lower-left corner changes.
+* A layer carries its world position in `bounds` (and, for vector layers, in its node
+  coordinates). `Layer::translate` moves both; `Layer::mirror` flips the mirror flags, mirrors
+  `bounds` about the selection centre, and for vector layers mirrors the nodes and recomputes
+  the bounds.
 * A zero length `G1` never fires the laser in laser mode, because GRBL only energises while
   moving. `engrave_segments` widens a single-pixel dark run to one pixel of travel for that
   reason, and `LayerReport::is_silent` flags a layer whose whole toolpath collapsed to points.
 * `$32=0` (no laser mode) makes GRBL interpret `M4` as "spindle CCW, dynamic power off"; a diode
   module wired to the direction pin then stays dark, so the job builder rewrites `M4` to `M3`
   when the controller reports laser mode off.
+* `Project::duplicate_group` inserts the copy into `groups` right after the original and then
+  appends its layers through `add_layer_to_group`, so the new block lands next to the source
+  block. The copy gets a fresh group id, a unique name (`X copy`, then `X copy 2`), and new
+  layer ids; layer names, parameters, and transforms are copied unchanged. The panel then
+  translates the copy by one snap step, which is a UI concern, not part of the model.
+* `FileKind` in `ui/project_io.rs` is the single mapping between a `LayerSource` variant, its
+  file filter, its bounds rule, and its constructor. Import and replacement both go through it,
+  and `FileKind::of` returning `None` is what makes a vector layer unreplaceable. Replacement
+  keeps the previous lower-left corner (Gerber excepted, its geometry is absolute) and, for
+  images, the previous width.
 * `GcodeCommand` stores parsed fields, but downstream code only reads `raw`.
 * Passes exist at three levels: `machine.passes` (whole job), `layer.params.passes`
   (source generator), and per-source comment blocks.
@@ -331,6 +353,7 @@ processed prefix of the segment list.
 1. `src/main.rs` — how the process starts.
 2. `src/ui/mod.rs` — the `LaserApp` state and frame loop.
 3. `src/core/layer/layer.rs` + `project.rs` — the document model.
-4. `src/ui/widget/job.rs` — how a document becomes G-code.
-5. `src/ui/panels/canvas/mod.rs` and `input.rs` — how drawing and editing feel.
-6. `src/comm/streamer.rs` — how bytes reach the controller.
+4. `src/core/layer/geometry.rs` — how any layer becomes segments, mirrored and anchored.
+5. `src/ui/widget/job.rs` — how a document becomes G-code.
+6. `src/ui/panels/canvas/mod.rs` and `input.rs` — how drawing and editing feel.
+7. `src/comm/streamer.rs` — how bytes reach the controller.

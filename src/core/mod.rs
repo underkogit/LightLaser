@@ -5,6 +5,7 @@ pub mod geometry;
 pub mod image;
 pub mod job;
 pub mod layer;
+pub mod mirror;
 pub mod tools;
 pub mod vector;
 pub mod vector_gcode;

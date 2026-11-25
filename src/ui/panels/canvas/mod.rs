@@ -5,7 +5,6 @@ pub(crate) mod state;
 
 pub use state::CanvasState;
 
-use crate::core::layer::LayerSource;
 use crate::ui::LaserApp;
 
 impl LaserApp {
@@ -151,8 +150,6 @@ impl LaserApp {
         self.push_history();
         for id in ids {
             if let Some(layer) = self.project.layers.get_mut(id) {
-                layer.offset[0] = (layer.offset[0] / step).round() * step;
-                layer.offset[1] = (layer.offset[1] / step).round() * step;
                 if let Some(b) = layer.bounds.as_mut() {
                     b[0] = (b[0] / step).round() * step;
                     b[1] = (b[1] / step).round() * step;
@@ -179,121 +176,24 @@ impl LaserApp {
 
     fn mirror_selection(&mut self, mirror_x: bool) {
         let sel = self.ui_state.selection.clone();
-        let mut ids = sel.layers.clone();
-        if let Some(id) = sel.layer {
-            if !ids.contains(&id) {
-                ids.push(id);
-            }
+        let mut indices = sel.layers.clone();
+        if let Some(index) = sel.layer
+            && !indices.contains(&index)
+        {
+            indices.push(index);
         }
-        if ids.is_empty() {
+
+        let ids: Vec<u64> = indices
+            .iter()
+            .filter_map(|index| self.project.layers.get(*index).map(|layer| layer.id))
+            .collect();
+
+        if ids.is_empty() || self.project.layers_bounds(&ids).is_none() {
             return;
         }
-
-        let mut min_x = f64::INFINITY;
-        let mut min_y = f64::INFINITY;
-        let mut max_x = f64::NEG_INFINITY;
-        let mut max_y = f64::NEG_INFINITY;
-        let mut any = false;
-
-        for &id in &ids {
-            if let Some(layer) = self.project.layers.get(id) {
-                if let Some((a, b, c, d)) = layer.bounds() {
-                    min_x = min_x.min(a);
-                    min_y = min_y.min(b);
-                    max_x = max_x.max(c);
-                    max_y = max_y.max(d);
-                    any = true;
-                }
-            }
-        }
-
-        if !any {
-            return;
-        }
-
-        let cx = (min_x + max_x) / 2.0;
-        let cy = (min_y + max_y) / 2.0;
 
         self.push_history();
-
-        for &id in &ids {
-            if let Some(layer) = self.project.layers.get_mut(id) {
-                let is_gcode = matches!(layer.source, LayerSource::Gcode { .. });
-
-                if is_gcode {
-                    if let Some((min_x_l, min_y_l, max_x_l, max_y_l)) = layer.bounds() {
-                        let local_cx = (min_x_l + max_x_l) / 2.0;
-                        let local_cy = (min_y_l + max_y_l) / 2.0;
-                        let shift_x = cx - local_cx;
-                        let shift_y = cy - local_cy;
-
-                        layer.offset[0] += if mirror_x { 2.0 * shift_x } else { 0.0 };
-                        layer.offset[1] += if !mirror_x { 2.0 * shift_y } else { 0.0 };
-
-                        let center = layer.mirror_center.unwrap_or([0.0, 0.0]);
-                        let new_center = if mirror_x {
-                            [layer.offset[0] + local_cx, center[1]]
-                        } else {
-                            [center[0], layer.offset[1] + local_cy]
-                        };
-                        let _ = new_center;
-
-                        layer.mirror_center = Some([local_cx, local_cy]);
-
-                        if mirror_x {
-                            layer.mirror_x = !layer.mirror_x;
-                        } else {
-                            layer.mirror_y = !layer.mirror_y;
-                        }
-
-                        if let Some(b) = layer.bounds.as_mut() {
-                            let a = *b;
-                            if mirror_x {
-                                b[0] = 2.0 * cx - a[2];
-                                b[2] = 2.0 * cx - a[0];
-                            } else {
-                                b[1] = 2.0 * cy - a[3];
-                                b[3] = 2.0 * cy - a[1];
-                            }
-                        }
-                    }
-                    continue;
-                }
-
-                if mirror_x {
-                    for shape in &mut layer.shapes {
-                        for n in &mut shape.nodes {
-                            n.point.x = 2.0 * cx - n.point.x;
-                            n.handle_in.x = 2.0 * cx - n.handle_in.x;
-                            n.handle_out.x = 2.0 * cx - n.handle_out.x;
-                        }
-                        shape.nodes.reverse();
-                    }
-                    layer.offset[0] = 2.0 * cx - layer.offset[0];
-                    if let Some(b) = layer.bounds.as_mut() {
-                        let a = *b;
-                        b[0] = 2.0 * cx - a[2];
-                        b[2] = 2.0 * cx - a[0];
-                    }
-                } else {
-                    for shape in &mut layer.shapes {
-                        for n in &mut shape.nodes {
-                            n.point.y = 2.0 * cy - n.point.y;
-                            n.handle_in.y = 2.0 * cy - n.handle_in.y;
-                            n.handle_out.y = 2.0 * cy - n.handle_out.y;
-                        }
-                        shape.nodes.reverse();
-                    }
-                    layer.offset[1] = 2.0 * cy - layer.offset[1];
-                    if let Some(b) = layer.bounds.as_mut() {
-                        let a = *b;
-                        b[1] = 2.0 * cy - a[3];
-                        b[3] = 2.0 * cy - a[1];
-                    }
-                }
-            }
-        }
-
+        self.project.mirror_layers(&ids, mirror_x);
         self.canvas.segment_cache.clear();
     }
 

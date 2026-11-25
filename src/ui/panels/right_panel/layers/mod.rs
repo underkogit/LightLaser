@@ -24,8 +24,10 @@ pub(super) enum LayerAction {
     SetGroupVisible(GroupId, bool),
     SetGroupEnabled(GroupId, bool),
     SetGroupLayersVisible(GroupId, bool),
+    DuplicateGroup(GroupId),
     RemoveGroup(GroupId),
     RemoveLayer(u64),
+    ReplaceLayer(u64),
     SetLayerVisible(u64, bool),
     SetLayerEnabled(u64, bool),
     CreateGroup,
@@ -171,6 +173,7 @@ impl LaserApp {
                         Some(LayerRow {
                             id: layer.id,
                             name: layer.name.clone(),
+                            source: layer.source.clone(),
                             visible: layer.is_visible,
                             enabled: layer.is_enabled,
                             selected: selection.is_layer_selected(index),
@@ -289,6 +292,19 @@ impl LaserApp {
                     self.push_history();
                     self.project.set_group_members_visible(group, visible);
                 }
+                LayerAction::DuplicateGroup(group) => {
+                    self.push_history();
+                    let step = self.duplicate_offset();
+                    if let Some(copy) = self.project.duplicate_group(group) {
+                        for index in self.project.group_members(copy) {
+                            if let Some(layer) = self.project.layers.get_mut(index) {
+                                layer.translate(step, step);
+                            }
+                        }
+                        let ids = self.group_layer_ids(copy);
+                        self.select_layer_ids(&ids);
+                    }
+                }
                 LayerAction::RemoveGroup(group) => {
                     let removed = self.group_layer_ids(group);
                     let mut kept = self.selected_layer_ids();
@@ -306,6 +322,9 @@ impl LaserApp {
                     self.push_history();
                     self.project.remove_layer(index);
                     self.select_layer_ids(&kept);
+                }
+                LayerAction::ReplaceLayer(id) => {
+                    self.replace_layer_interactive(id);
                 }
                 LayerAction::SetLayerVisible(id, visible) => {
                     if let Some(index) = self.project.layer_index(id) {
