@@ -14,6 +14,11 @@ canvas, then streams the resulting G-code to a GRBL-based laser controller over 
 - Canvas-based editor with zoom, pan, grid, axes, and a work-area outline.
 - Layers: image, SVG, G-code, Gerber, and vector. Every layer has a colour, a name, a
   visibility flag (canvas) and an enabled flag (jobs and exports).
+- Layer groups: every layer lives in a group. A group is a contiguous block of layers, so the
+  order shown in the panel is the engraving order. Clicking a group selects all of its layers
+  and they move together on the canvas; layers are dragged between groups in the panel.
+  Groups collapse, rename, and toggle visibility/enabled for all of their layers at once. A
+  layer added while no group exists gets one named `Group 1`, `Group 2`, and so on.
 - Vector drawing tools: line, curve, rectangle, circle, plus node and handle editing.
 - Move, rubber-band select, mirror, round-to-step, copy, paste, duplicate, delete.
 - Undo and redo for canvas edits and for layer position edits (see limitations for
@@ -68,9 +73,9 @@ they sit next to the executable at runtime.
 cargo test
 ```
 
-The suite currently covers G-code line parsing and SVG size parsing (13 tests pass, 1 ignored
-performance benchmark). `cargo check --all-targets` also reports the current list of dead-code
-warnings; see [REFACTOR_REPORT.md](REFACTOR_REPORT.md).
+The suite currently covers G-code line parsing, SVG size parsing, and the layer group
+invariants (26 tests pass, 1 ignored performance benchmark). `cargo check --all-targets` also
+reports the current list of dead-code warnings; see [REFACTOR_REPORT.md](REFACTOR_REPORT.md).
 
 ## Running
 
@@ -105,10 +110,16 @@ cargo run --release
 3. Select a layer in the right panel and adjust its parameters. Hover a control to see what
    it does.
 4. Use the visibility checkbox to hide a layer on the canvas and the enabled checkbox to
-   include or exclude it from jobs and exports.
-5. Connect through the connection dialog, choosing the serial port and baud rate.
-6. Press `Start` to stream the job, or `File > Export G-code` to save it to a file.
-7. Save the project with `File > Save project` (TOML).
+   include or exclude it from jobs and exports. The same two checkboxes on a group header
+   apply to every layer in that group.
+5. Work with groups in the same panel: the caret collapses a group, a click on its name
+   selects the whole group, a double-click renames it, and the bin deletes the group together
+   with its layers. Drag a layer by its name onto another group's header to move it there, or
+   onto another layer to place it above or below that one; the line that follows the pointer
+   shows where it lands. The arrows move a layer inside its own group only.
+6. Connect through the connection dialog, choosing the serial port and baud rate.
+7. Press `Start` to stream the job, or `File > Export G-code` to save it to a file.
+8. Save the project with `File > Save project` (TOML).
 
 ## Layer types
 
@@ -128,10 +139,14 @@ Projects are TOML documents containing:
 - The project version (currently `1`) and name.
 - Machine configuration: port, baud rate, work area, jog step, jog feed, and how many times
   the whole job runs.
+- Layer groups with the group name, colour, and collapsed state.
 - Layers with source type, colour, visibility, enabled state, parameters, bounds, vector
-  shapes, offset, and mirror settings.
+  shapes, offset, and mirror settings. Each layer carries a stable `id`, the `group` it
+  belongs to, and its position in the list is its engraving order.
 
-Loading a project with a different version logs a warning and continues.
+Loading a project with a different version logs a warning and continues. Projects written
+before groups existed are upgraded on load: all of their layers end up in a single group,
+and the layer order is preserved.
 
 ## Configuration
 
@@ -147,7 +162,7 @@ Translations are flat TOML dictionaries in `locales/`:
 - `en.toml` — English
 - `ru.toml` — Russian
 
-Both files currently hold the same 138 keys. At runtime they are read from `<exe>/locales`.
+Both files currently hold the same 145 keys. At runtime they are read from `<exe>/locales`.
 
 ## Keyboard and mouse
 
@@ -175,11 +190,15 @@ On macOS, `Ctrl` means `Cmd` where the platform uses it.
 - The theme selector is stored but not applied; the interface uses the default egui visuals.
 - The window size is saved but not restored; the window opens at 1200 × 720.
 - `Dither` is stored, serialised, and shown in the UI, but the rasterizer ignores it.
-- Undo covers canvas edits and layer position edits. Parameter changes (power, feed, name,
-  colour), deleting or reordering layers in the layer list, and toggling visibility/enabled
-  are not undoable.
+- Undo covers canvas edits, layer position edits, and the layer list: dragging a layer
+  between groups, moving it inside its group, deleting a layer or a group, and renaming a
+  group. Parameter changes (power, feed, name, colour), visibility/enabled toggles, and
+  collapsing a group are not undoable.
 - A hidden but enabled layer is not drawn on the canvas or in the preview, yet it is included
-  in jobs and exports.
+  in jobs and exports. The group checkbox writes both flags together.
+- A group's colour is taken from the first layer that created it and cannot be edited.
+- Groups cannot be reordered as a whole: a group sits where its first layer sits, so moving a
+  group means dragging a layer past another group in the panel.
 - Imported G-code is re-emitted as `G0`/`G1` moves with the layer's power and feed: arcs
   become straight lines, relative coordinates are not supported, and `S`, `M3`/`M4`, and `Z`
   from the source are dropped.

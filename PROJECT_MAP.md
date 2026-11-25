@@ -83,8 +83,9 @@ points 208 (2%). The three largest files are `core/image/gerber.rs` (832),
 
 | Path | Responsibility |
 | --- | --- |
-| `core/layer/project.rs` | `Project` (`version`, `name`, `layers`, `machine`); `PROJECT_VERSION = 1`; layer order operations |
-| `core/layer/layer.rs` | `Layer`, `LayerParams`, `LayerSource`, `VectorShape`, `EngraveMode`, `LayerUnit`; bounds and translate helpers |
+| `core/layer/project.rs` | `Project` (`version`, `name`, `layers`, `groups`, `machine`); `PROJECT_VERSION = 1`; group and layer ordering, id allocation, `normalize` |
+| `core/layer/group.rs` | `LayerGroup` (id, name, colour, collapsed), `GroupId`, `DropTarget` |
+| `core/layer/layer.rs` | `Layer` (with stable `id` and `group`), `LayerParams`, `LayerSource`, `VectorShape`, `EngraveMode`, `LayerUnit`; bounds and translate helpers |
 | `core/config.rs` | `MachineConfig` (port, baud, work area, jog step/feed, job passes) |
 | `core/vector/` | `CurvePoint`, `Bezier*`, `PathNode`, `VectorPath`, `StrokeStyle`; flattening and bounds |
 | `core/tools/` | Drawing tools behind the `Tool` trait: select, line, curve, rect, circle; tool events and previews |
@@ -126,7 +127,14 @@ Project
 ├── version: u32            (currently 1)
 ├── name: String
 ├── machine: MachineConfig  (port, baudrate, work_area_mm, jog_feed, jog_step, passes)
-└── layers: Vec<Layer>
+├── groups: Vec<LayerGroup>
+│   ├── id: GroupId (u64)
+│   ├── name: String
+│   ├── color: [u8;3]       copied from the first layer that created the group
+│   └── collapsed: bool
+└── layers: Vec<Layer>      order = z-order and engraving order
+    ├── id: u64             stable, allocated by `Project`
+    ├── group: GroupId      always names an existing group
     ├── name, color: [u8;3]
     ├── source: Image{path} | Svg{path} | Gcode{path} | Gerber{path} | Vector
     ├── is_visible (canvas), is_enabled (job/export)
@@ -139,6 +147,13 @@ Project
     ├── offset: [dx, dy]                               placement for segment/vector sources
     └── mirror_x, mirror_y, mirror_center
 ```
+
+Groups are blocks, not tags: every group's layers occupy one contiguous range of `layers`,
+and the blocks themselves follow the order of their first appearance. `Project::compact_groups`
+enforces it after a move, `Project::normalize` on load (it also allocates missing ids, drops
+empty groups, and puts orphan layers into one new group, which is how pre-group projects are
+upgraded). Group ids and layer ids come from one counter, `Project::next_id`, derived from the
+largest id in the document, so ids survive save/load without storing the counter.
 
 Layer sources split into two families:
 
@@ -221,13 +236,16 @@ processed prefix of the segment list.
 
 ## Persistence and localisation
 
-* **Project** (`*.toml`, `Project`): version, name, machine, layers with source, colour,
-  flags, params, bounds, shapes, offset, mirror fields. Version mismatch only logs a warning.
+* **Project** (`*.toml`, `Project`): version, name, machine, groups, layers with id, group,
+  source, colour, flags, params, bounds, shapes, offset, mirror fields. Version mismatch only
+  logs a warning; `load_project_from` calls `Project::normalize` afterwards.
 * **App config** (`<exe>/config/app_config.toml`, `AppConfig`): window size, locale, theme,
   grid/axes/work-area toggles, grid step, UI scale, console font size, optional UI font
   file, SVG import profile.
-* **Locales** (`locales/en.toml`, `locales/ru.toml`): flat `"key" = "value"` maps, 138 keys
-  each, loaded from `<exe>/locales` at startup. `LaserApp` resolves them with `t!`.
+* **Locales** (`locales/en.toml`, `locales/ru.toml`): flat `"key" = "value"` maps, 145 keys
+  each, loaded from `<exe>/locales` at startup. `LaserApp` resolves them with `t!`; the
+  auto-generated group name uses `ui.layer_group.name` as its base word and falls back to
+  `Group` when the dictionary is missing.
 
 ## Where to change what
 
@@ -242,11 +260,21 @@ processed prefix of the segment list.
 | Add an app setting | `ui/app_config.rs` field + default + settings UI (`widget/settings_window.rs`), then read it from `LaserApp` |
 | Add a controller command | `comm/grbl.rs` method, `StreamerCommand` + handler in `comm/streamer.rs`, button in `right_panel/machine.rs` or `jog_crosshair.rs` |
 | Change undo behaviour | `ui/history.rs` plus every `push_history` call site (search `push_history`) |
+| Add a group action | `LayerAction` + `apply_layer_actions` in `ui/panels/right_panel/layers.rs`, the matching `Project` method in `core/layer/project.rs`, and the header widget in `group_header` |
+| Change group ordering | `Project::group_block` / `group_order` / `move_layers_to` / `compact_groups` in `core/layer/project.rs`; the panel only reports a `DropTarget` |
 
 ## Invariants and traps
 
-* Selection is index-based: `project.layers[i]`, `layer.shapes[j]`. Any reorder or removal
-  needs the manual index fixups seen in `right_panel/layers.rs`.
+* Selection is index-based: `project.layers[i]`, `layer.shapes[j]`. Layers also carry a
+  stable `id`, and the layer panel converts between the two (`selected_layer_ids` /
+  `select_layer_ids`) before touching the document, because a drop reorders indices under the
+  selection. Any other code that reorders or removes layers must do the same.
+* Every layer names an existing group, and no group is empty: `remove_layer` drops the group
+  it emptied, `remove_group` drops its layers. `move_layers_to` resolves the drop anchor
+  before it removes the dragged layers and then shifts the index by how many of them sat
+  above it, so a group's block stays contiguous.
+* Selecting a group means selecting all of its layer indices; the canvas drag path
+  (`collect_drag_states`) then moves them together with no extra code.
 * There are three independent segment builders (live job, canvas cache, preview). They must
   produce the same geometry for the same layer; today they do not in all cases.
 * A layer carries world position in `bounds`, `offset`, and (for vector layers) node

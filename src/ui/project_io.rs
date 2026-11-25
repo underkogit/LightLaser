@@ -79,6 +79,8 @@ impl LaserApp {
             );
         }
 
+        project.normalize();
+
         for layer in &mut project.layers {
             layer.recompute_bounds();
         }

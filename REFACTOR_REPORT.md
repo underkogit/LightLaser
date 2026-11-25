@@ -41,7 +41,7 @@ Top five, in order:
    offsets they use (P1, the root cause of several smaller divergences).
 3. Passes are interpreted at three levels, and raster pass comments lie about what was cut (P1).
 4. `dither` is a stored, exposed, serialised setting that no code reads (P1, silent no-op).
-5. Undo does not cover the layer list, and undo itself is 100 full-document clones (P1/P2).
+5. Undo does not cover the parameter panel, and undo itself is 100 full-document clones (P1/P2).
 
 ## P0 — wrong output
 
@@ -185,21 +185,19 @@ Fix: one parser producing `Segment`s with an explicit motion model, including a 
 decision about arcs (either interpolate or reject with a clear log line). `project_io` should
 reuse it for bounds.
 
-### 7. Undo does not cover the layer list or parameter edits
+### 7. Undo does not cover parameter edits
 
-Evidence: delete, reorder, and visibility/enabled toggles mutate `Project` directly without
-`push_history` (`ui/panels/right_panel/layers.rs:89-130`), while canvas delete does push
-(`ui/panels/canvas/input.rs:532-553`, `ui/panels/right_panel/properties.rs:7-25`). In the
-properties panel only the position edit pushes (`ui/panels/right_panel/properties.rs:99-104`);
-name, colour, power, feed, passes, threshold, and the other parameters are written straight
-into the layer (`:55-64`, `:122-206`). Drag and mirror push once per gesture, which is correct.
+Evidence: the layer list now pushes history for drops, moves, removal, group renames and group
+flags (`ui/panels/right_panel/layers.rs`, `apply_layer_actions`), while visibility/enabled
+toggles and group collapsing stay out of the stack on purpose. In the properties panel only
+the position edit pushes (`ui/panels/right_panel/properties.rs:99-104`); name, colour, power,
+feed, passes, threshold, and the other parameters are written straight into the layer
+(`:55-64`, `:122-206`). Drag and mirror push once per gesture, which is correct.
 
-Impact: removing a layer with the trash button or changing power cannot be undone, and the
-undo stack no longer matches the document.
+Impact: changing power cannot be undone, and the undo stack no longer matches the document.
 
 Fix: make document mutation go through `Project` methods that take `&mut History`, or add a
-single `commit` wrapper. Until then, add `push_history` to the layer-list branches and to the
-parameter commit block.
+single `commit` wrapper and call it from the parameter commit block.
 
 ### 8. `LayerParams` edit uses clone-and-compare-nine-fields
 
@@ -214,18 +212,23 @@ body into a helper taking `&mut LayerParams`), or give `LayerParams` a `revision
 The colour and name fields already write directly, so in-place editing is consistent with
 the existing style.
 
-### 9. Index-based selection is fragile
+### 9. Selection is index-based while the document is now id-based
 
 Evidence: `Selection` stores `usize` indices (`ui/selection.rs:4-9`); removal renumbers them
-by hand (`ui/panels/right_panel/layers.rs:105-113`), and the properties panel re-checks bounds
-every frame (`:208`). Reordering layers invalidates `selection.layers` silently.
+by hand, and the properties panel re-checks bounds every frame. Reordering layers invalidates
+`selection.layers` silently.
 
-Impact: stale indices select the wrong layer after list edits; every new operation must
-repeat the fixup.
+Layers and groups now carry stable `u64` ids (`core/layer/layer.rs`, `core/layer/group.rs`),
+and the layer panel converts selection indices to ids before any mutation and back afterwards
+(`selected_layer_ids` / `select_layer_ids` in `right_panel/layers.rs`). Everything else still
+addresses layers by index, so a stale index is still possible from the canvas, properties, or
+duplicate paths.
 
-Fix: `LayerId(u64)` on `Layer`, `Vec<Layer>` plus `HashMap<LayerId, usize>` or an id→index
-lookup; selection stores ids, resolved at the frame boundary. This is a mechanical change
-that can be done source by source.
+Impact: every new operation must repeat the fixup, and one forgotten conversion selects or
+edits the wrong layer.
+
+Fix: switch `Selection` to ids and resolve to indices at the frame boundary. The ids the
+document needs already exist.
 
 ### 10. UI strings bypass localisation
 
@@ -239,7 +242,7 @@ only `en`/`ru` (`ui/widget/settings_window.rs:17`).
 
 Impact: Russian UI is partially English; the `fr` reference is dead weight.
 
-Fix: add keys for the visible strings (locale files currently have exact 138/138 parity, so
+Fix: add keys for the visible strings (locale files currently have exact 145/145 parity, so
 keep them in lockstep), remove `fr`, and derive the locale list from one constant shared by
 the backend and settings.
 
@@ -333,8 +336,9 @@ submodules; split preview into `view`/`raster`/`build`; move canvas editing oper
 ### 16. Test coverage is concentrated on two pure parsers
 
 There are no tests for engraving (pixel → runs), vector export, Gerber import, segment
-normalisation, project round-trip, selection/hit-testing, or the streamer state machine. The
-one rasterizer test is an ignored benchmark.
+normalisation, selection/hit-testing, or the streamer state machine. Project round-trip and
+the layer-group invariants are covered now (13 tests in `core/layer/project.rs`). The one
+rasterizer test is an ignored benchmark.
 
 Priority tests to add before the refactor:
 
@@ -379,8 +383,7 @@ Verification: `cargo test` green with the new suites added.
 * Unify visibility policy: decide whether a hidden layer is burned; make job, preview, and
   canvas agree, then document it in README.
 * Reuse one parser for `gcode_bounds` so imported bounds ignore rapid moves.
-* Add `push_history` to layer-list delete/reorder and to the parameter commit block, or route
-  mutations through `Project`.
+* Add `push_history` to the parameter commit block, or route mutations through `Project`.
 * Apply or remove `app_theme` and the window-size fields.
 
 Verification: new regression tests, no behaviour change outside the listed issues, manual
@@ -399,7 +402,8 @@ and explained line by line; preview and canvas identical for the same layer.
 
 ### Phase 3 — document identity and undo (3–5 days)
 
-* Add `LayerId`, switch `Selection` to ids, remove manual index fixups.
+* Switch `Selection` to ids (the document already carries `Layer::id` and `GroupId`), and
+  remove the remaining manual index fixups.
 * Make `Project::layers` private with explicit mutators; every mutator takes the history (or
   returns a change token) so undo coverage is structural rather than remembered.
 * Consider snapshot-on-edit only for small documents, or a command enum for large ones;

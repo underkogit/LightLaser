@@ -142,6 +142,12 @@ impl Default for VectorShape {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Layer {
+    #[serde(default)]
+    pub id: u64,
+
+    #[serde(default)]
+    pub group: crate::core::layer::GroupId,
+
     pub name: String,
     pub color: [u8; 3],
     pub source: LayerSource,
@@ -177,6 +183,8 @@ pub struct Layer {
 impl Layer {
     pub fn new(name: String, color: [u8; 3], source: LayerSource) -> Self {
         Self {
+            id: 0,
+            group: 0,
             name,
             color,
             source,

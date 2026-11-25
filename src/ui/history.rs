@@ -16,10 +16,14 @@ impl History {
     }
 
     pub fn push(&mut self, project: &Project) {
+        self.push_owned(project.clone());
+    }
+
+    pub fn push_owned(&mut self, project: Project) {
         if self.undo_stack.len() >= self.limit {
             self.undo_stack.remove(0);
         }
-        self.undo_stack.push(project.clone());
+        self.undo_stack.push(project);
         self.redo_stack.clear();
     }
 

@@ -676,8 +676,7 @@ fn apply_commits(app: &mut LaserApp, commits: Vec<ToolCommit>) {
     }
     layer.recompute_bounds();
 
-    app.project.add_layer(layer);
-    let new_idx = app.project.layers.len() - 1;
+    let new_idx = app.project.add_layer(layer);
     let new_si = app.project.layers[new_idx].shapes.len().saturating_sub(1);
     app.ui_state.selection.set_single_layer(new_idx);
     app.ui_state.selection.shape = Some(new_si);

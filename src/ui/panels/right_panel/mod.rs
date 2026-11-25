@@ -6,6 +6,7 @@ mod properties;
 use egui::Panel;
 use rust_i18n::t;
 
+use crate::core::layer::GroupId;
 use crate::ui::LaserApp;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -15,12 +16,20 @@ pub enum RightPanelTab {
     Properties,
 }
 
+pub struct GroupRename {
+    pub group: GroupId,
+    pub buffer: String,
+    pub focus_requested: bool,
+}
+
 pub struct RightPanelState {
     pub active_tab: RightPanelTab,
 
     /// Layer whose position is being dragged or typed in right now, so one continuous edit
     /// adds a single entry to the undo history instead of one per frame.
     pub position_edit_layer: Option<usize>,
+
+    pub group_rename: Option<GroupRename>,
 }
 
 impl Default for RightPanelState {
@@ -28,6 +37,7 @@ impl Default for RightPanelState {
         Self {
             active_tab: RightPanelTab::Layers,
             position_edit_layer: None,
+            group_rename: None,
         }
     }
 }

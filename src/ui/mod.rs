@@ -407,8 +407,7 @@ impl LaserApp {
                 }
                 layer_src.recompute_bounds();
                 layer_src.name = format!("{} copy", layer_src.name);
-                self.project.add_layer(layer_src);
-                new_ids.push(self.project.layers.len() - 1);
+                new_ids.push(self.project.add_layer(layer_src));
             }
             self.ui_state.selection.layers = new_ids.clone();
             self.ui_state.selection.layer = new_ids.last().copied();
@@ -462,20 +461,22 @@ impl LaserApp {
         };
         self.push_history();
         let offset = self.duplicate_offset();
+        let sources: Vec<crate::core::layer::Layer> = ids
+            .iter()
+            .filter_map(|&index| self.project.layers.get(index))
+            .cloned()
+            .collect();
         let mut new_ids = Vec::new();
-        for id in ids {
-            if let Some(src) = self.project.layers.get(id) {
-                let mut new_layer = src.clone();
-                new_layer.name = format!("{} copy", new_layer.name);
-                for shape in &mut new_layer.shapes {
-                    for n in &mut shape.nodes {
-                        n.translate(offset, offset);
-                    }
+        for src in sources {
+            let mut new_layer = src;
+            new_layer.name = format!("{} copy", new_layer.name);
+            for shape in &mut new_layer.shapes {
+                for n in &mut shape.nodes {
+                    n.translate(offset, offset);
                 }
-                new_layer.recompute_bounds();
-                self.project.add_layer(new_layer);
-                new_ids.push(self.project.layers.len() - 1);
             }
+            new_layer.recompute_bounds();
+            new_ids.push(self.project.add_layer(new_layer));
         }
         self.ui_state.selection.layers = new_ids.clone();
         self.ui_state.selection.layer = new_ids.last().copied();
