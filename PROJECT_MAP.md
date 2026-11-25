@@ -131,14 +131,13 @@ Project
 ├── groups: Vec<LayerGroup>  order = panel order
 │   ├── id: GroupId (u64)
 │   ├── name: String
-│   ├── color: [u8;3]       copied from the first layer that moves into the group
 │   ├── collapsed: bool
 │   ├── visible: bool       switch for the whole group
 │   └── enabled: bool       switch for the whole group
 └── layers: Vec<Layer>      order = z-order and engraving order
     ├── id: u64             stable, allocated by `Project`
     ├── group: GroupId      always names an existing group
-    ├── name, color: [u8;3]
+    ├── name: String
     ├── source: Image{path} | Svg{path} | Gcode{path} | Gerber{path} | Vector
     ├── is_visible (canvas), is_enabled (job/export)
     ├── params: LayerParams
@@ -163,7 +162,7 @@ document, so ids survive save/load without storing the counter.
 A group's `visible`/`enabled` flags are independent of the flags on its layers:
 `Project::layer_visible` and `Project::layer_enabled` combine both, and every consumer (canvas,
 hit testing, preview, job builder, export count) goes through them. The panel's group
-checkboxes write only the group flags; the "hide/show layers" items in the group menu write only
+checkboxes write only the group flags; the "hide/show layers" toggle in the group menu writes only
 the layer flags.
 
 Layer sources split into two families:

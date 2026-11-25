@@ -149,7 +149,6 @@ pub struct Layer {
     pub group: crate::core::layer::GroupId,
 
     pub name: String,
-    pub color: [u8; 3],
     pub source: LayerSource,
 
     #[serde(default = "default_true")]
@@ -181,12 +180,11 @@ pub struct Layer {
 }
 
 impl Layer {
-    pub fn new(name: String, color: [u8; 3], source: LayerSource) -> Self {
+    pub fn new(name: String, source: LayerSource) -> Self {
         Self {
             id: 0,
             group: 0,
             name,
-            color,
             source,
             is_visible: true,
             is_enabled: true,

@@ -151,7 +151,6 @@ impl LaserApp {
 
         let mut layer = Layer::new(
             name.clone(),
-            crate::ui::colors::LAYER_DEFAULT,
             LayerSource::Svg {
                 path: path.to_string_lossy().to_string(),
             },
@@ -210,7 +209,6 @@ impl LaserApp {
                     .to_string();
                 let mut layer = Layer::new(
                     name.clone(),
-                    crate::ui::colors::LAYER_DEFAULT,
                     LayerSource::Image {
                         path: path.to_string_lossy().to_string(),
                     },
@@ -235,7 +233,6 @@ impl LaserApp {
 
         let mut layer = Layer::new(
             name.clone(),
-            crate::ui::colors::LAYER_DEFAULT,
             LayerSource::Gcode {
                 path: path.to_string_lossy().to_string(),
             },
@@ -275,7 +272,6 @@ impl LaserApp {
 
         let mut layer = Layer::new(
             name.clone(),
-            crate::ui::colors::LAYER_DEFAULT,
             LayerSource::Gerber {
                 path: path.to_string_lossy().to_string(),
             },

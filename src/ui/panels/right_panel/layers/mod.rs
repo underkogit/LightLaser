@@ -23,13 +23,14 @@ pub(super) enum LayerAction {
     RenameGroup(GroupId, String),
     SetGroupVisible(GroupId, bool),
     SetGroupEnabled(GroupId, bool),
-    HideGroupLayers(GroupId),
-    ShowGroupLayers(GroupId),
+    SetGroupLayersVisible(GroupId, bool),
     RemoveGroup(GroupId),
     RemoveLayer(u64),
     SetLayerVisible(u64, bool),
     SetLayerEnabled(u64, bool),
     CreateGroup,
+    CreateLayer,
+    ClearSelection,
     Drop { ids: Vec<u64>, target: DropTarget },
 }
 
@@ -42,6 +43,28 @@ impl LaserApp {
         let shift = ui.input(|i| i.modifiers.shift);
         let dragging = drag.as_ref().is_some_and(|state| state.active);
         let mut rows: Vec<RowEntry> = Vec::new();
+
+        ui.horizontal(|ui| {
+            ui.menu_button(
+                format!(
+                    "{} {} {}",
+                    egui_phosphor::regular::PLUS,
+                    t!("ui.menu.create"),
+                    egui_phosphor::regular::CARET_DOWN
+                ),
+                |ui| {
+                    if ui.button(t!("ui.menu.create_group")).clicked() {
+                        actions.push(LayerAction::CreateGroup);
+                        ui.close();
+                    }
+                    if ui.button(t!("ui.menu.create_layer")).clicked() {
+                        actions.push(LayerAction::CreateLayer);
+                        ui.close();
+                    }
+                },
+            );
+        });
+        ui.add_space(4.0);
 
         if tree.is_empty() {
             ui.label(
@@ -81,6 +104,9 @@ impl LaserApp {
 
         let leftover = (ui.clip_rect().bottom() - ui.next_widget_position().y - 2.0).max(24.0);
         let empty = ui.allocate_response(egui::vec2(ui.available_width(), leftover), Sense::click());
+        if empty.clicked() {
+            actions.push(LayerAction::ClearSelection);
+        }
         empty.context_menu(|ui| {
             if ui.button(t!("ui.menu.group_new")).clicked() {
                 actions.push(LayerAction::CreateGroup);
@@ -145,7 +171,6 @@ impl LaserApp {
                         Some(LayerRow {
                             id: layer.id,
                             name: layer.name.clone(),
-                            color: layer.color,
                             visible: layer.is_visible,
                             enabled: layer.is_enabled,
                             selected: selection.is_layer_selected(index),
@@ -156,7 +181,6 @@ impl LaserApp {
                 Some(GroupRow {
                     id,
                     name: group.name.clone(),
-                    color: group.color,
                     collapsed: group.collapsed,
                     visible: group.visible,
                     enabled: group.enabled,
@@ -261,13 +285,9 @@ impl LaserApp {
                     self.push_history();
                     self.project.set_group_enabled(group, enabled);
                 }
-                LayerAction::HideGroupLayers(group) => {
+                LayerAction::SetGroupLayersVisible(group, visible) => {
                     self.push_history();
-                    self.project.set_group_members_visible(group, false);
-                }
-                LayerAction::ShowGroupLayers(group) => {
-                    self.push_history();
-                    self.project.set_group_members_visible(group, true);
+                    self.project.set_group_members_visible(group, visible);
                 }
                 LayerAction::RemoveGroup(group) => {
                     let removed = self.group_layer_ids(group);
@@ -314,6 +334,21 @@ impl LaserApp {
                         buffer,
                         focus_requested: false,
                     });
+                }
+                LayerAction::CreateLayer => {
+                    let group = self
+                        .selected_layer_ids()
+                        .first()
+                        .and_then(|id| self.project.layer_index(*id))
+                        .map(|index| self.project.layers[index].group)
+                        .or_else(|| self.project.group_order().last().copied());
+                    self.push_history();
+                    let index = self.project.create_layer(group);
+                    let id = self.project.layers[index].id;
+                    self.select_layer_ids(&[id]);
+                }
+                LayerAction::ClearSelection => {
+                    self.ui_state.selection.clear();
                 }
                 LayerAction::Drop { ids, target } => {
                     let snapshot = self.project.clone();

@@ -2,7 +2,7 @@ use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 
 use crate::core::config::MachineConfig;
-use crate::core::layer::{DropTarget, GroupId, Layer, LayerGroup};
+use crate::core::layer::{DropTarget, GroupId, Layer, LayerGroup, LayerSource};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Project {
@@ -112,30 +112,45 @@ impl Project {
         format!("{base} {}", self.groups.len() + 1)
     }
 
-    pub fn add_group(&mut self, name: String, color: [u8; 3]) -> GroupId {
+    fn auto_layer_name(&self) -> String {
+        let translated = t!("ui.label.layer").to_string();
+        let base = if translated.starts_with("ui.") {
+            "Layer".to_string()
+        } else {
+            translated
+        };
+        for n in 1..=9999 {
+            let name = format!("{base} {n}");
+            if !self.layers.iter().any(|l| l.name == name) {
+                return name;
+            }
+        }
+        format!("{base} {}", self.layers.len() + 1)
+    }
+
+    pub fn add_group(&mut self, name: String) -> GroupId {
         let id = self.next_id();
-        self.groups.push(LayerGroup::new(id, name, color));
+        self.groups.push(LayerGroup::new(id, name));
         id
     }
 
     pub fn create_group(&mut self) -> GroupId {
         let name = self.auto_group_name();
-        self.add_group(name, LayerGroup::DEFAULT_COLOR)
+        self.add_group(name)
     }
 
-    fn ensure_group(&mut self, requested: GroupId, color: [u8; 3]) -> GroupId {
+    fn ensure_group(&mut self, requested: GroupId) -> GroupId {
         if self.group(requested).is_some() {
             return requested;
         }
-        let name = self.auto_group_name();
-        self.add_group(name, color)
+        self.create_group()
     }
 
     pub fn add_layer(&mut self, mut layer: Layer) -> usize {
         if layer.id == 0 {
             layer.id = self.next_id();
         }
-        let group = self.ensure_group(layer.group, layer.color);
+        let group = self.ensure_group(layer.group);
         layer.group = group;
         self.insert_layer(layer, group)
     }
@@ -144,9 +159,15 @@ impl Project {
         if layer.id == 0 {
             layer.id = self.next_id();
         }
-        let group = self.ensure_group(group, layer.color);
+        let group = self.ensure_group(group);
         layer.group = group;
         self.insert_layer(layer, group)
+    }
+
+    pub fn create_layer(&mut self, group: Option<GroupId>) -> usize {
+        let group = group.unwrap_or_else(|| self.create_group());
+        let name = self.auto_layer_name();
+        self.add_layer_to_group(Layer::new(name, LayerSource::Vector), group)
     }
 
     fn insert_layer(&mut self, layer: Layer, group: GroupId) -> usize {
@@ -235,7 +256,6 @@ impl Project {
         }
 
         let before: Vec<(u64, GroupId)> = self.layers.iter().map(|l| (l.id, l.group)).collect();
-        let target_was_empty = self.group_block(target_group).is_none();
 
         let shifted = absolute - moving.iter().filter(|&&index| index < absolute).count();
 
@@ -245,17 +265,10 @@ impl Project {
         }
         extracted.reverse();
 
-        let color = extracted.first().map(|layer| layer.color);
         let start = shifted.min(self.layers.len());
         for (offset, mut layer) in extracted.into_iter().enumerate() {
             layer.group = target_group;
             self.layers.insert(start + offset, layer);
-        }
-
-        if target_was_empty {
-            if let (Some(color), Some(group)) = (color, self.group_mut(target_group)) {
-                group.color = color;
-            }
         }
 
         self.compact_groups();
@@ -329,9 +342,8 @@ impl Project {
             .collect();
 
         if !orphans.is_empty() {
-            let color = self.layers[orphans[0]].color;
             let name = self.auto_group_name();
-            let id = self.add_group(name, color);
+            let id = self.add_group(name);
             for index in orphans {
                 self.layers[index].group = id;
             }
@@ -376,7 +388,7 @@ mod tests {
     use crate::core::layer::LayerSource;
 
     fn layer(name: &str) -> Layer {
-        Layer::new(name.to_string(), [10, 20, 30], LayerSource::Vector)
+        Layer::new(name.to_string(), LayerSource::Vector)
     }
 
     fn names(project: &Project) -> Vec<String> {

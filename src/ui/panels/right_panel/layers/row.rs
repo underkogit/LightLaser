@@ -7,14 +7,11 @@ use crate::ui::LaserApp;
 use crate::ui::panels::right_panel::{GroupRename, LayerRowDrag};
 
 const ROW_HEIGHT: f32 = 22.0;
-const SWATCH_SIZE: f32 = 16.0;
-const SWATCH_GAP: f32 = 6.0;
 const COUNT_WIDTH: f32 = 34.0;
 
 pub(super) struct LayerRow {
     pub(super) id: u64,
     pub(super) name: String,
-    pub(super) color: [u8; 3],
     pub(super) visible: bool,
     pub(super) enabled: bool,
     pub(super) selected: bool,
@@ -23,7 +20,6 @@ pub(super) struct LayerRow {
 pub(super) struct GroupRow {
     pub(super) id: GroupId,
     pub(super) name: String,
-    pub(super) color: [u8; 3],
     pub(super) collapsed: bool,
     pub(super) visible: bool,
     pub(super) enabled: bool,
@@ -114,7 +110,6 @@ impl LaserApp {
                             egui::vec2(ui.available_width(), ROW_HEIGHT),
                             Sense::click_and_drag(),
                         );
-                        paint_swatch(ui.painter(), swatch_rect(area), group.color, dim);
                         paint_count(
                             ui.painter(),
                             area,
@@ -169,12 +164,18 @@ impl LaserApp {
                                     actions.push(LayerAction::SelectGroup(group.id));
                                     ui.close();
                                 }
-                                if ui.button(t!("ui.menu.group_hide_layers")).clicked() {
-                                    actions.push(LayerAction::HideGroupLayers(group.id));
-                                    ui.close();
-                                }
-                                if ui.button(t!("ui.menu.group_show_layers")).clicked() {
-                                    actions.push(LayerAction::ShowGroupLayers(group.id));
+                                let all_visible = !group.members.is_empty()
+                                    && group.members.iter().all(|member| member.visible);
+                                let toggle_label = if all_visible {
+                                    t!("ui.menu.group_hide_layers")
+                                } else {
+                                    t!("ui.menu.group_show_layers")
+                                };
+                                if ui.button(toggle_label).clicked() {
+                                    actions.push(LayerAction::SetGroupLayersVisible(
+                                        group.id,
+                                        !all_visible,
+                                    ));
                                     ui.close();
                                 }
                                 ui.separator();
@@ -257,8 +258,6 @@ impl LaserApp {
                             egui::vec2(ui.available_width(), ROW_HEIGHT),
                             Sense::click_and_drag(),
                         );
-                        paint_swatch(ui.painter(), swatch_rect(area), layer.color, dim);
-
                         row_text(
                             ui,
                             text_rect(area, false),
@@ -335,15 +334,8 @@ fn row_text(ui: &egui::Ui, area: egui::Rect, text: &str, color: egui::Color32) {
     );
 }
 
-fn swatch_rect(area: egui::Rect) -> egui::Rect {
-    egui::Rect::from_min_size(
-        egui::pos2(area.left(), area.center().y - SWATCH_SIZE / 2.0),
-        egui::vec2(SWATCH_SIZE, SWATCH_SIZE),
-    )
-}
-
 fn text_rect(area: egui::Rect, with_count: bool) -> egui::Rect {
-    let left = area.left() + SWATCH_SIZE + SWATCH_GAP;
+    let left = area.left() + 2.0;
     let right = if with_count {
         area.right() - COUNT_WIDTH
     } else {
@@ -353,14 +345,6 @@ fn text_rect(area: egui::Rect, with_count: bool) -> egui::Rect {
         egui::pos2(left, area.top()),
         egui::pos2(right.max(left + 24.0), area.bottom()),
     )
-}
-
-fn paint_swatch(painter: &egui::Painter, rect: egui::Rect, color: [u8; 3], dim: bool) {
-    let mut color = egui::Color32::from_rgb(color[0], color[1], color[2]);
-    if dim {
-        color = color.gamma_multiply(0.35);
-    }
-    painter.rect_filled(rect, 2.0, color);
 }
 
 fn paint_count(painter: &egui::Painter, area: egui::Rect, count: usize, color: egui::Color32) {

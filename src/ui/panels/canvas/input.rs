@@ -6,7 +6,7 @@ use crate::core::tools::{
 };
 use crate::core::vector::{CurvePoint, VectorPath};
 use crate::ui::{
-    CanvasTransform, LaserApp, colors,
+    CanvasTransform, LaserApp,
     selection::{self, HandleKind},
 };
 
@@ -669,8 +669,7 @@ fn apply_commits(app: &mut LaserApp, commits: Vec<ToolCommit>) {
         return;
     }
 
-    let color = colors::LAYER_DEFAULT;
-    let mut layer = Layer::new("Vector".to_string(), color, LayerSource::Vector);
+    let mut layer = Layer::new("Vector".to_string(), LayerSource::Vector);
     for s in shapes {
         layer.shapes.push(s);
     }

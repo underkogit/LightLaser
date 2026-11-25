@@ -118,10 +118,12 @@ cargo run --release
    checkboxes, but they act as a switch for the whole group: they stay independent of the
    per-layer flags, and a hidden group hides its layers while their own checkboxes keep their
    state.
-5. Work with groups in the same panel: the caret collapses a group, a click on its header
-   selects the whole group, a double-click renames it, and the bin deletes the group together
-   with its layers. A right-click on the header opens the group menu (select, hide layers,
-   show layers, delete); a right-click below the list creates a new group. Press the left
+5. Work with groups in the same panel: `Create` above the list adds a group or an empty vector
+   layer (it joins the selected layer's group), the caret collapses a group, a click on its
+   header selects the whole group, a double-click renames it, and the bin deletes the group
+   together with its layers. A right-click on the header opens the group menu (select, hide or
+   show the layers, delete); a right-click below the list creates a new group, and a plain click
+   there clears the selection. Press the left
    button on a layer row and drag it onto another group's header to move it there, or onto
    another layer to place it above or below that one; the line under the pointer shows where it
    lands and the ghost near the pointer names what is being dragged. Dragging a multi-selection

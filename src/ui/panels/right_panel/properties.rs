@@ -25,19 +25,13 @@ impl LaserApp {
     }
 
     pub(crate) fn ui_layer_params(&mut self, ui: &mut egui::Ui, idx: usize) {
-        let (name, source_label, params, color) = {
+        let (name, source_label, params) = {
             let l = &self.project.layers[idx];
-            (
-                l.name.clone(),
-                l.source.kind_label(),
-                l.params.clone(),
-                l.color,
-            )
+            (l.name.clone(), l.source.kind_label(), l.params.clone())
         };
 
         let mut new_name = name;
         let mut new_params: LayerParams = params;
-        let mut color32 = egui::Color32::from_rgb(color[0], color[1], color[2]);
 
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -50,17 +44,6 @@ impl LaserApp {
             ui.label(t!("ui.label.layer_name").to_string());
             ui.text_edit_singleline(&mut new_name)
                 .on_hover_text(t!("ui.tip.layer_name").to_string());
-        });
-
-        ui.horizontal(|ui| {
-            ui.label("Color");
-            if ui
-                .color_edit_button_srgba(&mut color32)
-                .on_hover_text(t!("ui.tip.color").to_string())
-                .changed()
-            {
-                self.project.layers[idx].color = [color32.r(), color32.g(), color32.b()];
-            }
         });
 
         // Position of the whole layer on the workbed. Editing it translates the layer the

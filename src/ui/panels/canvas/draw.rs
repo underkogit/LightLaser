@@ -517,7 +517,7 @@ fn draw_layer(
         let color = if layer_selected {
             colors::PATH_LAYER_SELECTED
         } else {
-            Color32::from_rgb(layer.color[0], layer.color[1], layer.color[2])
+            colors::PATH_LAYER
         };
 
         match cache::get_or_build(segment_cache, layer) {
@@ -533,9 +533,9 @@ fn draw_layer(
             None => {
                 let alpha = if layer_selected { 180 } else { 120 };
                 let fallback = Color32::from_rgba_unmultiplied(
-                    layer.color[0],
-                    layer.color[1],
-                    layer.color[2],
+                    colors::PATH_LAYER.r(),
+                    colors::PATH_LAYER.g(),
+                    colors::PATH_LAYER.b(),
                     alpha,
                 );
                 painter.rect_filled(rect, 2.0, fallback);
@@ -590,7 +590,7 @@ fn draw_vector_layer(
         let stroke_color = if shape_selected {
             colors::PATH_LAYER_SELECTED
         } else {
-            Color32::from_rgb(layer.color[0], layer.color[1], layer.color[2])
+            colors::PATH_LAYER
         };
 
         let width = (shape.stroke.width_mm as f32 * transform.scale).clamp(1.0, 6.0);

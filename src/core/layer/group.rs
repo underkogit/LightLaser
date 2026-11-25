@@ -10,9 +10,6 @@ pub struct LayerGroup {
     #[serde(default)]
     pub name: String,
 
-    #[serde(default = "default_group_color")]
-    pub color: [u8; 3],
-
     #[serde(default)]
     pub collapsed: bool,
 
@@ -24,13 +21,10 @@ pub struct LayerGroup {
 }
 
 impl LayerGroup {
-    pub const DEFAULT_COLOR: [u8; 3] = [128, 128, 128];
-
-    pub fn new(id: GroupId, name: String, color: [u8; 3]) -> Self {
+    pub fn new(id: GroupId, name: String) -> Self {
         Self {
             id,
             name,
-            color,
             collapsed: false,
             visible: true,
             enabled: true,
@@ -48,10 +42,6 @@ pub enum DropTarget {
     GroupEnd(GroupId),
     BeforeLayer(u64),
     AfterLayer(u64),
-}
-
-fn default_group_color() -> [u8; 3] {
-    LayerGroup::DEFAULT_COLOR
 }
 
 fn default_group_flag() -> bool {
