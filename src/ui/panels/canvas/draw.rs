@@ -190,7 +190,7 @@ pub fn render_layers(
     let selection = app.ui_state.selection.clone();
 
     for (i, layer) in app.project.layers.iter().enumerate() {
-        if !layer.is_visible {
+        if !app.project.layer_visible(layer) {
             continue;
         }
         let layer_selected = selection.is_layer_selected(i);

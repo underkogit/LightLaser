@@ -51,7 +51,7 @@ impl LaserApp {
             }
 
             for (i, layer) in self.project.layers.iter().enumerate() {
-                if !layer.is_enabled {
+                if !self.project.layer_enabled(layer) {
                     continue;
                 }
 

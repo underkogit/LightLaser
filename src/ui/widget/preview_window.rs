@@ -180,7 +180,7 @@ fn rebuild_preview(app: &mut LaserApp) {
     let mut lines: Vec<(f64, f64, f64, f64)> = Vec::new();
 
     for layer in &app.project.layers {
-        if !layer.is_enabled || !layer.is_visible {
+        if !app.project.layer_enabled(layer) || !app.project.layer_visible(layer) {
             continue;
         }
         let segments = build_layer_segments(layer);

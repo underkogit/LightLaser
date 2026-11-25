@@ -1,6 +1,6 @@
 use egui::{CursorIcon, Response, Vec2};
 
-use crate::core::layer::{Layer, LayerSource, VectorShape};
+use crate::core::layer::{Layer, LayerSource, Project, VectorShape};
 use crate::core::tools::{
     ToolCommit, ToolContext, ToolEvent, ToolKind, ToolModifiers, ToolResponse,
 };
@@ -26,7 +26,7 @@ pub fn handle_interaction(
     let world = CurvePoint::new(wx, wy);
 
     app.status_bar.set_mouse_world(wx, wy);
-    app.canvas.hovered_layer = hit_test_layers(&app.project.layers, world);
+    app.canvas.hovered_layer = hit_test_layers(&app.project, world);
 
     let scroll = ui.input(|i| i.smooth_scroll_delta.y);
     if scroll != 0.0 {
@@ -184,7 +184,7 @@ fn update_cursor(
         }
     }
 
-    if hover_icon == CursorIcon::Default && hit_test_layers(&app.project.layers, world).is_some() {
+    if hover_icon == CursorIcon::Default && hit_test_layers(&app.project, world).is_some() {
         hover_icon = CursorIcon::Move;
     }
 
@@ -300,7 +300,7 @@ fn handle_primary_down(
     }
 
     if !picked {
-        if let Some(li) = hit_test_layers(&app.project.layers, world) {
+        if let Some(li) = hit_test_layers(&app.project, world) {
             if modifiers.shift {
                 if app.ui_state.selection.is_layer_selected(li) {
                     // Hold the toggle back until the press is known to be a click. Shift is
@@ -378,7 +378,7 @@ fn apply_rubber_band_selection(
 
     let mut found_indices = Vec::new();
     for (i, layer) in app.project.layers.iter().enumerate() {
-        if !layer.is_visible {
+        if !app.project.layer_visible(layer) {
             continue;
         }
         if let Some((lmin_x, lmin_y, lmax_x, lmax_y)) = layer.bounds() {
@@ -684,9 +684,9 @@ fn apply_commits(app: &mut LaserApp, commits: Vec<ToolCommit>) {
     app.ui_state.selection.handle = None;
 }
 
-fn hit_test_layers(layers: &[Layer], p: CurvePoint) -> Option<usize> {
-    for (i, layer) in layers.iter().enumerate().rev() {
-        if !layer.is_visible {
+fn hit_test_layers(project: &Project, p: CurvePoint) -> Option<usize> {
+    for (i, layer) in project.layers.iter().enumerate().rev() {
+        if !project.layer_visible(layer) {
             continue;
         }
         if let Some((min_x, min_y, max_x, max_y)) = layer.bounds() {

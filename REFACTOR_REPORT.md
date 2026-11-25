@@ -10,13 +10,13 @@ Measured on Windows with the project's own toolchain:
 
 | Check | Result |
 | --- | --- |
-| `cargo test` | 13 passed, 1 ignored, 0 failed (14 tests total) |
-| `cargo check --all-targets` | success, 53 warnings (38 dead-code items), 4 unused dependencies |
-| Source size | 78 files, 11,902 lines |
-| UI share | 6,682 lines (56%): `ui/panels` 3,278, `ui/widget` 1,898, `ui` root 1,506 |
-| Core share | 4,264 lines (36%), of which `core/image` is 2,289 |
-| Communication | 748 lines (6%) |
-| Largest files | `core/image/gerber.rs` 832, `ui/widget/preview_window.rs` 753, `ui/panels/canvas/input.rs` 700, `ui/panels/canvas/draw.rs` 699 |
+| `cargo test` | 35 passed, 1 ignored, 0 failed (36 tests total) |
+| `cargo check --all-targets` | success, 62 warnings (34 dead-code items), 4 unused dependencies |
+| Source size | 81 files, 11,644 lines |
+| UI share | 6,594 lines (57%): `ui/panels` 3,635, `ui/widget` 1,632, `ui` root 1,327 |
+| Core share | 4,214 lines (36%), of which `core/image` is 1,968 |
+| Communication | 663 lines (6%) |
+| Largest files | `core/image/gerber.rs` 721, `ui/widget/preview_window.rs` 646, `ui/panels/canvas/input.rs` 638, `ui/panels/canvas/draw.rs` 617 |
 
 There is no CI configuration, no `lib` target, and no integration test directory. The only
 tests cover G-code line parsing (3) and SVG size parsing (10); one performance test is
@@ -96,11 +96,12 @@ cheaper correct option for the next release.
 They duplicate per-source rasterization, origin computation, mirroring, normalization, and
 offset application. Already visible drift:
 
-* **Visibility semantics.** The job includes any `is_enabled` layer
-  (`ui/widget/job.rs:53-56`); preview requires `is_enabled && is_visible`
-  (`ui/widget/preview_window.rs:182-184`); the canvas requires `is_visible`
+* **Visibility semantics.** The job includes any layer that `Project::layer_enabled` accepts
+  (`ui/widget/job.rs:53-56`); preview requires both
+  (`ui/widget/preview_window.rs:182-184`); the canvas requires `Project::layer_visible`
   (`ui/panels/canvas/draw.rs:192-195`). A hidden but enabled layer is drawn nowhere, yet
-  burned.
+  burned. The group switches now feed all three through those two helpers, but the policy
+  itself is still split three ways.
 * **Placement.** Preview adds `layer.offset` for G-code and Gerber segments
   (`ui/widget/preview_window.rs:338-342`); the canvas cache does not and leaves the offset to
   the draw call (`ui/panels/canvas/draw.rs:329-330`); the job normalizes again against its
@@ -187,8 +188,9 @@ reuse it for bounds.
 
 ### 7. Undo does not cover parameter edits
 
-Evidence: the layer list now pushes history for drops, moves, removal, group renames and group
-flags (`ui/panels/right_panel/layers.rs`, `apply_layer_actions`), while visibility/enabled
+Evidence: the layer list now pushes history for drops, removal, group renames, group flags,
+group creation, and the group menu's hide/show-layers items
+(`ui/panels/right_panel/layers/mod.rs`, `apply_layer_actions`), while per-layer visibility/enabled
 toggles and group collapsing stay out of the stack on purpose. In the properties panel only
 the position edit pushes (`ui/panels/right_panel/properties.rs:99-104`); name, colour, power,
 feed, passes, threshold, and the other parameters are written straight into the layer
@@ -220,7 +222,7 @@ by hand, and the properties panel re-checks bounds every frame. Reordering layer
 
 Layers and groups now carry stable `u64` ids (`core/layer/layer.rs`, `core/layer/group.rs`),
 and the layer panel converts selection indices to ids before any mutation and back afterwards
-(`selected_layer_ids` / `select_layer_ids` in `right_panel/layers.rs`). Everything else still
+(`selected_layer_ids` / `select_layer_ids` in `right_panel/layers/mod.rs`). Everything else still
 addresses layers by index, so a stale index is still possible from the canvas, properties, or
 duplicate paths.
 
@@ -336,9 +338,10 @@ submodules; split preview into `view`/`raster`/`build`; move canvas editing oper
 ### 16. Test coverage is concentrated on two pure parsers
 
 There are no tests for engraving (pixel → runs), vector export, Gerber import, segment
-normalisation, selection/hit-testing, or the streamer state machine. Project round-trip and
-the layer-group invariants are covered now (13 tests in `core/layer/project.rs`). The one
-rasterizer test is an ignored benchmark.
+normalisation, selection/hit-testing, or the streamer state machine. Project round-trip, the
+layer-group invariants (16 tests in `core/layer/project.rs`), and the layer panel's drop-target
+geometry (6 tests in `right_panel/layers/drop.rs`) are covered now. The one rasterizer test is an
+ignored benchmark.
 
 Priority tests to add before the refactor:
 

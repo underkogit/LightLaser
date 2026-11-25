@@ -25,7 +25,12 @@ impl LaserApp {
                 ui.label(t!("ui.label.export.description").to_string());
                 ui.add_space(8.0);
 
-                let enabled_count = self.project.layers.iter().filter(|l| l.is_enabled).count();
+                let enabled_count = self
+                    .project
+                    .layers
+                    .iter()
+                    .filter(|layer| self.project.layer_enabled(layer))
+                    .count();
                 ui.label(format!(
                     "{}: {}",
                     t!("ui.label.export.layers_count"),

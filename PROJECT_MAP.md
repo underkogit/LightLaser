@@ -84,7 +84,7 @@ points 208 (2%). The three largest files are `core/image/gerber.rs` (832),
 | Path | Responsibility |
 | --- | --- |
 | `core/layer/project.rs` | `Project` (`version`, `name`, `layers`, `groups`, `machine`); `PROJECT_VERSION = 1`; group and layer ordering, id allocation, `normalize` |
-| `core/layer/group.rs` | `LayerGroup` (id, name, colour, collapsed), `GroupId`, `DropTarget` |
+| `core/layer/group.rs` | `LayerGroup` (id, name, colour, collapsed, `visible`, `enabled`), `GroupId`, `DropTarget` |
 | `core/layer/layer.rs` | `Layer` (with stable `id` and `group`), `LayerParams`, `LayerSource`, `VectorShape`, `EngraveMode`, `LayerUnit`; bounds and translate helpers |
 | `core/config.rs` | `MachineConfig` (port, baud, work area, jog step/feed, job passes) |
 | `core/vector/` | `CurvePoint`, `Bezier*`, `PathNode`, `VectorPath`, `StrokeStyle`; flattening and bounds |
@@ -104,7 +104,7 @@ points 208 (2%). The three largest files are `core/image/gerber.rs` (832),
 | `core/image/palette.rs` | Palette extraction (unused) |
 | `core/bounding_box.rs` | `BoundingBox` accumulator used for fit-to-view |
 
-### `src/ui` — application shell (6,682 lines)
+### `src/ui` — application shell (6,594 lines)
 
 | Path | Responsibility |
 | --- | --- |
@@ -118,6 +118,7 @@ points 208 (2%). The three largest files are `core/image/gerber.rs` (832),
 | `ui/line_raster.rs` | Software line rasterizer and texture sizing for canvas/preview caches |
 | `ui/panels/` | Top bar (menus, connection, state), bottom bar (version, MPos), left tool rail, right panel (layers, properties, machine controls, jog crosshair) |
 | `ui/panels/canvas/` | Canvas panel: background, layers, overlays, input handling, `CanvasState`, segment cache |
+| `ui/panels/right_panel/layers/` | Layer tree: `mod.rs` (list, drag lifecycle, `LayerAction` and its application), `row.rs` (group header and layer row widgets, `LayerRow`/`GroupRow`), `drop.rs` (pointer → `DropTarget`, insertion line, drag ghost) |
 | `ui/widget/` | Dialogs and windows: connection, export, settings, console, preview, G-code viewer; job builder |
 
 ## Data model
@@ -127,11 +128,13 @@ Project
 ├── version: u32            (currently 1)
 ├── name: String
 ├── machine: MachineConfig  (port, baudrate, work_area_mm, jog_feed, jog_step, passes)
-├── groups: Vec<LayerGroup>
+├── groups: Vec<LayerGroup>  order = panel order
 │   ├── id: GroupId (u64)
 │   ├── name: String
-│   ├── color: [u8;3]       copied from the first layer that created the group
-│   └── collapsed: bool
+│   ├── color: [u8;3]       copied from the first layer that moves into the group
+│   ├── collapsed: bool
+│   ├── visible: bool       switch for the whole group
+│   └── enabled: bool       switch for the whole group
 └── layers: Vec<Layer>      order = z-order and engraving order
     ├── id: u64             stable, allocated by `Project`
     ├── group: GroupId      always names an existing group
@@ -148,12 +151,20 @@ Project
     └── mirror_x, mirror_y, mirror_center
 ```
 
-Groups are blocks, not tags: every group's layers occupy one contiguous range of `layers`,
-and the blocks themselves follow the order of their first appearance. `Project::compact_groups`
-enforces it after a move, `Project::normalize` on load (it also allocates missing ids, drops
-empty groups, and puts orphan layers into one new group, which is how pre-group projects are
-upgraded). Group ids and layer ids come from one counter, `Project::next_id`, derived from the
-largest id in the document, so ids survive save/load without storing the counter.
+Groups are blocks, not tags: every group's layers occupy one contiguous range of `layers`, and
+the blocks follow the order of `groups`. `Project::compact_groups` enforces it after a move.
+Groups may be empty, so a group can exist before a layer is dropped into it; `group_block`
+returns `None` for those and `group_insert_index` finds where their layers belong.
+`Project::normalize` runs on load: it allocates missing ids, gives nameless groups a name, and
+puts orphan layers into one new group, which is how pre-group projects are upgraded. Group ids
+and layer ids come from one counter, `Project::next_id`, derived from the largest id in the
+document, so ids survive save/load without storing the counter.
+
+A group's `visible`/`enabled` flags are independent of the flags on its layers:
+`Project::layer_visible` and `Project::layer_enabled` combine both, and every consumer (canvas,
+hit testing, preview, job builder, export count) goes through them. The panel's group
+checkboxes write only the group flags; the "hide/show layers" items in the group menu write only
+the layer flags.
 
 Layer sources split into two families:
 
@@ -182,8 +193,8 @@ preview and G-code windows), `Selection` (layer/shape/node/handle indices), `His
 1. `start_job` calls `build_job_gcode`; the result is a `Vec<String>` of raw G-code lines.
 2. Header: `G21`, `G90`, `G17`.
 3. Outer loop over `machine.passes` repeats the whole job.
-4. For each `is_enabled` layer (visibility is ignored here), compute origin and size and
-   branch on `LayerSource`:
+4. For each layer whose `Project::layer_enabled` is true (visibility is ignored here), compute
+   origin and size and branch on `LayerSource`:
    * `Image` → `load_image` → `rasterize` (px/mm, threshold, invert) → `engrave_layer`.
    * `Svg`, `EngraveMode::Lines` → `svg_trace::rasterize_svg_to_image` (512–4096 px) →
      `trace_image_to_paths(128)` → `traced_paths_to_gcode` with X/Y scale factors.
@@ -203,7 +214,7 @@ and the G-code viewer both call it.
 
 1. `ui_canvas` allocates a painter, applies a pending "fit view", builds `CanvasTransform`.
 2. `render_background`: grid, axes, work-area rectangle with dimensions.
-3. `render_layers`: skips invisible layers; per source either
+3. `render_layers`: skips layers that `Project::layer_visible` rejects; per source either
    * draws an image/SVG texture (`texture_cache`, keyed by source path), or
    * asks `cache::get_or_build` for segments and draws them, choosing a rasterized texture
      when the cached texture resolution is sufficient or a culled line pass otherwise.
@@ -242,7 +253,7 @@ processed prefix of the segment list.
 * **App config** (`<exe>/config/app_config.toml`, `AppConfig`): window size, locale, theme,
   grid/axes/work-area toggles, grid step, UI scale, console font size, optional UI font
   file, SVG import profile.
-* **Locales** (`locales/en.toml`, `locales/ru.toml`): flat `"key" = "value"` maps, 145 keys
+* **Locales** (`locales/en.toml`, `locales/ru.toml`): flat `"key" = "value"` maps, 151 keys
   each, loaded from `<exe>/locales` at startup. `LaserApp` resolves them with `t!`; the
   auto-generated group name uses `ui.layer_group.name` as its base word and falls back to
   `Group` when the dictionary is missing.
@@ -260,8 +271,9 @@ processed prefix of the segment list.
 | Add an app setting | `ui/app_config.rs` field + default + settings UI (`widget/settings_window.rs`), then read it from `LaserApp` |
 | Add a controller command | `comm/grbl.rs` method, `StreamerCommand` + handler in `comm/streamer.rs`, button in `right_panel/machine.rs` or `jog_crosshair.rs` |
 | Change undo behaviour | `ui/history.rs` plus every `push_history` call site (search `push_history`) |
-| Add a group action | `LayerAction` + `apply_layer_actions` in `ui/panels/right_panel/layers.rs`, the matching `Project` method in `core/layer/project.rs`, and the header widget in `group_header` |
-| Change group ordering | `Project::group_block` / `group_order` / `move_layers_to` / `compact_groups` in `core/layer/project.rs`; the panel only reports a `DropTarget` |
+| Add a group action | `LayerAction` + `apply_layer_actions` in `ui/panels/right_panel/layers/mod.rs`, the matching `Project` method in `core/layer/project.rs`, and the header widget in `group_header` (`layers/row.rs`) |
+| Change group ordering | `Project::group_block` / `group_order` / `group_insert_index` / `move_layers_to` / `compact_groups` in `core/layer/project.rs`; the panel only reports a `DropTarget` |
+| Change how rows drag | `ui/panels/right_panel/layers/`: `row.rs` starts a `LayerRowDrag` on a press, `drop.rs` maps the pointer to a `DropTarget` and paints the indicator and ghost, `mod.rs` turns the release at the end of `ui_layer_list` into a `LayerAction::Drop`. Nothing relies on egui's built-in drag-and-drop payloads |
 
 ## Invariants and traps
 
@@ -269,10 +281,15 @@ processed prefix of the segment list.
   stable `id`, and the layer panel converts between the two (`selected_layer_ids` /
   `select_layer_ids`) before touching the document, because a drop reorders indices under the
   selection. Any other code that reorders or removes layers must do the same.
-* Every layer names an existing group, and no group is empty: `remove_layer` drops the group
-  it emptied, `remove_group` drops its layers. `move_layers_to` resolves the drop anchor
-  before it removes the dragged layers and then shifts the index by how many of them sat
-  above it, so a group's block stays contiguous.
+* Every layer names an existing group; a group may be empty. `group_block` returns `None` for
+  an empty group and `group_insert_index` places its first layer where the group sits in
+  `groups` order. `remove_layer` leaves the emptied group in place, `remove_group` drops its
+  layers. `move_layers_to` resolves the drop anchor before it removes the dragged layers and
+  then shifts the index by how many of them sat above it, so a group's block stays contiguous.
+* Group visibility is two flags deep: `LayerGroup::visible`/`enabled` are switches for the whole
+  group and are deliberately not copied into the layers. All drawing, hit testing, job building,
+  and counting go through `Project::layer_visible` / `Project::layer_enabled`, which combine the
+  group flag with the layer flag.
 * Selecting a group means selecting all of its layer indices; the canvas drag path
   (`collect_drag_states`) then moves them together with no extra code.
 * There are three independent segment builders (live job, canvas cache, preview). They must

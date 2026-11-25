@@ -15,10 +15,13 @@ canvas, then streams the resulting G-code to a GRBL-based laser controller over 
 - Layers: image, SVG, G-code, Gerber, and vector. Every layer has a colour, a name, a
   visibility flag (canvas) and an enabled flag (jobs and exports).
 - Layer groups: every layer lives in a group. A group is a contiguous block of layers, so the
-  order shown in the panel is the engraving order. Clicking a group selects all of its layers
-  and they move together on the canvas; layers are dragged between groups in the panel.
-  Groups collapse, rename, and toggle visibility/enabled for all of their layers at once. A
-  layer added while no group exists gets one named `Group 1`, `Group 2`, and so on.
+  order shown in the panel is the engraving order. Layers are indented under their group. A
+  click on a group header selects all of its layers and they move together on the canvas. A
+  group can be collapsed, renamed, emptied and refilled; it can also exist before it holds any
+  layer. The group checkboxes hide or disable the whole group without touching the per-layer
+  checkboxes. Layers are moved between groups by dragging them in the panel, which is also the
+  only way to change the engraving order. A layer added while no group exists gets one named
+  `Group 1`, `Group 2`, and so on.
 - Vector drawing tools: line, curve, rectangle, circle, plus node and handle editing.
 - Move, rubber-band select, mirror, round-to-step, copy, paste, duplicate, delete.
 - Undo and redo for canvas edits and for layer position edits (see limitations for
@@ -73,9 +76,10 @@ they sit next to the executable at runtime.
 cargo test
 ```
 
-The suite currently covers G-code line parsing, SVG size parsing, and the layer group
-invariants (26 tests pass, 1 ignored performance benchmark). `cargo check --all-targets` also
-reports the current list of dead-code warnings; see [REFACTOR_REPORT.md](REFACTOR_REPORT.md).
+The suite currently covers G-code line parsing, SVG size parsing, the layer group invariants,
+and the layer panel's drop-target geometry (35 tests pass, 1 ignored performance benchmark).
+`cargo check --all-targets` also reports the current list of dead-code warnings; see
+[REFACTOR_REPORT.md](REFACTOR_REPORT.md).
 
 ## Running
 
@@ -110,13 +114,18 @@ cargo run --release
 3. Select a layer in the right panel and adjust its parameters. Hover a control to see what
    it does.
 4. Use the visibility checkbox to hide a layer on the canvas and the enabled checkbox to
-   include or exclude it from jobs and exports. The same two checkboxes on a group header
-   apply to every layer in that group.
-5. Work with groups in the same panel: the caret collapses a group, a click on its name
+   include or exclude it from jobs and exports. The group header carries the same two
+   checkboxes, but they act as a switch for the whole group: they stay independent of the
+   per-layer flags, and a hidden group hides its layers while their own checkboxes keep their
+   state.
+5. Work with groups in the same panel: the caret collapses a group, a click on its header
    selects the whole group, a double-click renames it, and the bin deletes the group together
-   with its layers. Drag a layer by its name onto another group's header to move it there, or
-   onto another layer to place it above or below that one; the line that follows the pointer
-   shows where it lands. The arrows move a layer inside its own group only.
+   with its layers. A right-click on the header opens the group menu (select, hide layers,
+   show layers, delete); a right-click below the list creates a new group. Press the left
+   button on a layer row and drag it onto another group's header to move it there, or onto
+   another layer to place it above or below that one; the line under the pointer shows where it
+   lands and the ghost near the pointer names what is being dragged. Dragging a multi-selection
+   moves all of its layers and keeps their relative order.
 6. Connect through the connection dialog, choosing the serial port and baud rate.
 7. Press `Start` to stream the job, or `File > Export G-code` to save it to a file.
 8. Save the project with `File > Save project` (TOML).
@@ -139,14 +148,16 @@ Projects are TOML documents containing:
 - The project version (currently `1`) and name.
 - Machine configuration: port, baud rate, work area, jog step, jog feed, and how many times
   the whole job runs.
-- Layer groups with the group name, colour, and collapsed state.
+- Layer groups in panel order, each with the group name, colour, collapsed state, and its own
+  visibility and enabled switches. Empty groups are kept.
 - Layers with source type, colour, visibility, enabled state, parameters, bounds, vector
   shapes, offset, and mirror settings. Each layer carries a stable `id`, the `group` it
   belongs to, and its position in the list is its engraving order.
 
 Loading a project with a different version logs a warning and continues. Projects written
 before groups existed are upgraded on load: all of their layers end up in a single group,
-and the layer order is preserved.
+and the layer order is preserved. A layer whose group is missing from the file is moved into a
+new group instead of being dropped.
 
 ## Configuration
 
@@ -162,7 +173,7 @@ Translations are flat TOML dictionaries in `locales/`:
 - `en.toml` — English
 - `ru.toml` — Russian
 
-Both files currently hold the same 145 keys. At runtime they are read from `<exe>/locales`.
+Both files currently hold the same 151 keys. At runtime they are read from `<exe>/locales`.
 
 ## Keyboard and mouse
 
@@ -190,15 +201,17 @@ On macOS, `Ctrl` means `Cmd` where the platform uses it.
 - The theme selector is stored but not applied; the interface uses the default egui visuals.
 - The window size is saved but not restored; the window opens at 1200 × 720.
 - `Dither` is stored, serialised, and shown in the UI, but the rasterizer ignores it.
-- Undo covers canvas edits, layer position edits, and the layer list: dragging a layer
-  between groups, moving it inside its group, deleting a layer or a group, and renaming a
-  group. Parameter changes (power, feed, name, colour), visibility/enabled toggles, and
-  collapsing a group are not undoable.
+- Undo covers canvas edits, layer position edits, and the layer list: dragging a layer onto
+  another group or another layer inside one group, deleting a layer or a group, renaming a
+  group, creating a group, hiding or showing the layers of a group from its menu, and the
+  group visibility/enabled switches. Parameter changes (power, feed, name, colour),
+  per-layer visibility/enabled toggles, and collapsing a group are not undoable.
 - A hidden but enabled layer is not drawn on the canvas or in the preview, yet it is included
-  in jobs and exports. The group checkbox writes both flags together.
-- A group's colour is taken from the first layer that created it and cannot be edited.
-- Groups cannot be reordered as a whole: a group sits where its first layer sits, so moving a
-  group means dragging a layer past another group in the panel.
+  in jobs and exports. The group switches are separate: a hidden group also hides its layers
+  from jobs and exports, and the per-layer checkboxes keep their own state.
+- A group's colour is taken from the first layer that moves into it and cannot be edited.
+  Groups are listed in the order they were created; there is no way to reorder groups as a
+  whole, and a layer can only be placed inside an existing group.
 - Imported G-code is re-emitted as `G0`/`G1` moves with the layer's power and feed: arcs
   become straight lines, relative coordinates are not supported, and `S`, `M3`/`M4`, and `Z`
   from the source are dropped.

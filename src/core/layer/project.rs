@@ -57,6 +57,10 @@ impl Project {
         self.groups.iter_mut().find(|g| g.id == id)
     }
 
+    pub fn group_order(&self) -> Vec<GroupId> {
+        self.groups.iter().map(|group| group.id).collect()
+    }
+
     pub fn group_members(&self, id: GroupId) -> Vec<usize> {
         self.layers
             .iter()
@@ -64,16 +68,6 @@ impl Project {
             .filter(|(_, l)| l.group == id)
             .map(|(i, _)| i)
             .collect()
-    }
-
-    pub fn group_order(&self) -> Vec<GroupId> {
-        let mut order: Vec<GroupId> = Vec::new();
-        for layer in &self.layers {
-            if self.group(layer.group).is_some() && !order.contains(&layer.group) {
-                order.push(layer.group);
-            }
-        }
-        order
     }
 
     pub fn group_block(&self, id: GroupId) -> Option<(usize, usize)> {
@@ -87,17 +81,19 @@ impl Project {
     }
 
     pub fn group_visible(&self, id: GroupId) -> bool {
-        self.layers
-            .iter()
-            .filter(|l| l.group == id)
-            .all(|l| l.is_visible)
+        self.group(id).is_none_or(|group| group.visible)
     }
 
     pub fn group_enabled(&self, id: GroupId) -> bool {
-        self.layers
-            .iter()
-            .filter(|l| l.group == id)
-            .all(|l| l.is_enabled)
+        self.group(id).is_none_or(|group| group.enabled)
+    }
+
+    pub fn layer_visible(&self, layer: &Layer) -> bool {
+        layer.is_visible && self.group_visible(layer.group)
+    }
+
+    pub fn layer_enabled(&self, layer: &Layer) -> bool {
+        layer.is_enabled && self.group_enabled(layer.group)
     }
 
     fn auto_group_name(&self) -> String {
@@ -120,6 +116,11 @@ impl Project {
         let id = self.next_id();
         self.groups.push(LayerGroup::new(id, name, color));
         id
+    }
+
+    pub fn create_group(&mut self) -> GroupId {
+        let name = self.auto_group_name();
+        self.add_group(name, LayerGroup::DEFAULT_COLOR)
     }
 
     fn ensure_group(&mut self, requested: GroupId, color: [u8; 3]) -> GroupId {
@@ -149,51 +150,36 @@ impl Project {
     }
 
     fn insert_layer(&mut self, layer: Layer, group: GroupId) -> usize {
-        let index = self
-            .group_block(group)
-            .map(|(_, end)| end)
-            .unwrap_or(self.layers.len());
+        let index = self.group_insert_index(group);
         self.layers.insert(index, layer);
         index
+    }
+
+    fn group_insert_index(&self, group: GroupId) -> usize {
+        if let Some((_, end)) = self.group_block(group) {
+            return end;
+        }
+        let order = self.group_order();
+        let Some(position) = order.iter().position(|id| *id == group) else {
+            return self.layers.len();
+        };
+        order[position + 1..]
+            .iter()
+            .find_map(|id| self.group_block(*id))
+            .map(|(start, _)| start)
+            .unwrap_or(self.layers.len())
     }
 
     pub fn remove_layer(&mut self, index: usize) {
         if index >= self.layers.len() {
             return;
         }
-        let group = self.layers.remove(index).group;
-        if !self.layers.iter().any(|l| l.group == group) {
-            self.groups.retain(|g| g.id != group);
-        }
+        self.layers.remove(index);
     }
 
     pub fn remove_group(&mut self, id: GroupId) {
         self.layers.retain(|l| l.group != id);
         self.groups.retain(|g| g.id != id);
-    }
-
-    pub fn move_layer_up(&mut self, index: usize) {
-        let Some(layer) = self.layers.get(index) else {
-            return;
-        };
-        let Some((start, _)) = self.group_block(layer.group) else {
-            return;
-        };
-        if index > start {
-            self.layers.swap(index, index - 1);
-        }
-    }
-
-    pub fn move_layer_down(&mut self, index: usize) {
-        let Some(layer) = self.layers.get(index) else {
-            return;
-        };
-        let Some((_, end)) = self.group_block(layer.group) else {
-            return;
-        };
-        if index + 1 < end {
-            self.layers.swap(index, index + 1);
-        }
     }
 
     pub fn rename_group(&mut self, id: GroupId, name: String) {
@@ -206,12 +192,6 @@ impl Project {
         }
     }
 
-    pub fn set_group_collapsed(&mut self, id: GroupId, collapsed: bool) {
-        if let Some(group) = self.group_mut(id) {
-            group.collapsed = collapsed;
-        }
-    }
-
     pub fn toggle_group_collapsed(&mut self, id: GroupId) {
         if let Some(group) = self.group_mut(id) {
             group.collapsed = !group.collapsed;
@@ -219,34 +199,25 @@ impl Project {
     }
 
     pub fn set_group_visible(&mut self, id: GroupId, visible: bool) {
+        if let Some(group) = self.group_mut(id) {
+            group.visible = visible;
+        }
+    }
+
+    pub fn set_group_enabled(&mut self, id: GroupId, enabled: bool) {
+        if let Some(group) = self.group_mut(id) {
+            group.enabled = enabled;
+        }
+    }
+
+    pub fn set_group_members_visible(&mut self, id: GroupId, visible: bool) {
         for layer in self.layers.iter_mut().filter(|l| l.group == id) {
             layer.is_visible = visible;
         }
     }
 
-    pub fn set_group_enabled(&mut self, id: GroupId, enabled: bool) {
-        for layer in self.layers.iter_mut().filter(|l| l.group == id) {
-            layer.is_enabled = enabled;
-        }
-    }
-
     pub fn move_layers_to(&mut self, ids: &[u64], target: DropTarget) -> bool {
-        let resolved = match target {
-            DropTarget::GroupStart(group) => {
-                self.group_block(group).map(|(start, _)| (group, 0, start))
-            }
-            DropTarget::GroupEnd(group) => self
-                .group_block(group)
-                .map(|(start, end)| (group, end - start, start)),
-            DropTarget::BeforeLayer(id) => self
-                .layer_index(id)
-                .and_then(|index| self.anchor(index)),
-            DropTarget::AfterLayer(id) => self
-                .layer_index(id)
-                .and_then(|index| self.anchor(index))
-                .map(|(group, offset, start)| (group, offset + 1, start)),
-        };
-        let Some((target_group, offset, block_start)) = resolved else {
+        let Some((target_group, absolute)) = self.resolve_drop(target) else {
             return false;
         };
 
@@ -264,8 +235,8 @@ impl Project {
         }
 
         let before: Vec<(u64, GroupId)> = self.layers.iter().map(|l| (l.id, l.group)).collect();
+        let target_was_empty = self.group_block(target_group).is_none();
 
-        let absolute = block_start + offset;
         let shifted = absolute - moving.iter().filter(|&&index| index < absolute).count();
 
         let mut extracted: Vec<Layer> = Vec::with_capacity(moving.len());
@@ -274,11 +245,17 @@ impl Project {
         }
         extracted.reverse();
 
-        let mut at = shifted.min(self.layers.len());
-        for mut layer in extracted {
+        let color = extracted.first().map(|layer| layer.color);
+        let start = shifted.min(self.layers.len());
+        for (offset, mut layer) in extracted.into_iter().enumerate() {
             layer.group = target_group;
-            self.layers.insert(at, layer);
-            at += 1;
+            self.layers.insert(start + offset, layer);
+        }
+
+        if target_was_empty {
+            if let (Some(color), Some(group)) = (color, self.group_mut(target_group)) {
+                group.color = color;
+            }
         }
 
         self.compact_groups();
@@ -287,10 +264,31 @@ impl Project {
         before != after
     }
 
-    fn anchor(&self, index: usize) -> Option<(GroupId, usize, usize)> {
-        let group = self.layers.get(index)?.group;
-        let (start, _) = self.group_block(group)?;
-        Some((group, index - start, start))
+    fn resolve_drop(&self, target: DropTarget) -> Option<(GroupId, usize)> {
+        match target {
+            DropTarget::GroupStart(group) => {
+                let index = self
+                    .group_block(group)
+                    .map(|(start, _)| start)
+                    .unwrap_or_else(|| self.group_insert_index(group));
+                Some((group, index))
+            }
+            DropTarget::GroupEnd(group) => {
+                let index = self
+                    .group_block(group)
+                    .map(|(_, end)| end)
+                    .unwrap_or_else(|| self.group_insert_index(group));
+                Some((group, index))
+            }
+            DropTarget::BeforeLayer(id) => {
+                let index = self.layer_index(id)?;
+                Some((self.layers[index].group, index))
+            }
+            DropTarget::AfterLayer(id) => {
+                let index = self.layer_index(id)?;
+                Some((self.layers[index].group, index + 1))
+            }
+        }
     }
 
     pub fn normalize(&mut self) {
@@ -322,44 +320,53 @@ impl Project {
     }
 
     fn normalize_groups(&mut self) {
-        let used: Vec<GroupId> = self.layers.iter().map(|l| l.group).collect();
-        self.groups.retain(|group| used.contains(&group.id));
-
-        let orphan: Option<usize> = self
+        let orphans: Vec<usize> = self
             .layers
             .iter()
-            .position(|l| self.group(l.group).is_none());
-        let Some(first) = orphan else {
-            return;
-        };
-        let color = self.layers[first].color;
-        let name = self.auto_group_name();
-        let id = self.add_group(name, color);
-        let known: Vec<GroupId> = self.groups.iter().map(|g| g.id).collect();
-        for layer in self.layers.iter_mut() {
-            if !known.contains(&layer.group) {
-                layer.group = id;
+            .enumerate()
+            .filter(|(_, layer)| self.group(layer.group).is_none())
+            .map(|(index, _)| index)
+            .collect();
+
+        if !orphans.is_empty() {
+            let color = self.layers[orphans[0]].color;
+            let name = self.auto_group_name();
+            let id = self.add_group(name, color);
+            for index in orphans {
+                self.layers[index].group = id;
+            }
+        }
+
+        let unnamed: Vec<GroupId> = self
+            .groups
+            .iter()
+            .filter(|group| group.is_empty_name())
+            .map(|group| group.id)
+            .collect();
+        for id in unnamed {
+            let name = self.auto_group_name();
+            if let Some(group) = self.group_mut(id) {
+                group.name = name;
             }
         }
     }
 
     fn compact_groups(&mut self) {
-        let mut order: Vec<GroupId> = Vec::new();
+        let mut order: Vec<GroupId> = self.group_order();
         for layer in &self.layers {
             if !order.contains(&layer.group) {
                 order.push(layer.group);
             }
         }
 
-        let mut buckets: Vec<(GroupId, Vec<Layer>)> =
-            order.into_iter().map(|id| (id, Vec::new())).collect();
+        let mut buckets: Vec<Vec<Layer>> = order.iter().map(|_| Vec::new()).collect();
         for layer in self.layers.drain(..) {
-            if let Some(bucket) = buckets.iter_mut().find(|(id, _)| *id == layer.group) {
-                bucket.1.push(layer);
+            if let Some(index) = order.iter().position(|id| *id == layer.group) {
+                buckets[index].push(layer);
             }
         }
 
-        self.layers = buckets.into_iter().flat_map(|(_, layers)| layers).collect();
+        self.layers = buckets.into_iter().flatten().collect();
     }
 }
 
@@ -394,6 +401,21 @@ mod tests {
         true
     }
 
+    fn blocks_follow_group_order(project: &Project) -> bool {
+        let order = project.group_order();
+        let mut last = 0_usize;
+        for layer in &project.layers {
+            let Some(position) = order.iter().position(|id| *id == layer.group) else {
+                return false;
+            };
+            if position < last {
+                return false;
+            }
+            last = position;
+        }
+        true
+    }
+
     #[test]
     fn first_layer_creates_group() {
         let mut project = Project::new();
@@ -420,15 +442,30 @@ mod tests {
     }
 
     #[test]
-    fn removing_last_member_drops_group() {
+    fn removing_last_member_keeps_empty_group() {
         let mut project = Project::new();
         project.add_layer(layer("a"));
         project.add_layer(layer("b"));
 
         project.remove_layer(0);
 
-        assert_eq!(project.groups.len(), 1);
+        assert_eq!(project.groups.len(), 2);
         assert_eq!(project.layers.len(), 1);
+        assert_eq!(project.group_members(project.groups[0].id), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn empty_group_receives_layers_at_its_own_place() {
+        let mut project = Project::new();
+        project.add_layer(layer("a"));
+        let middle = project.create_group();
+        project.add_layer(layer("b"));
+
+        let added = project.add_layer_to_group(layer("c"), middle);
+
+        assert_eq!(names(&project), vec!["a", "c", "b"]);
+        assert_eq!(project.layers[added].group, middle);
+        assert!(blocks_follow_group_order(&project));
     }
 
     #[test]
@@ -491,21 +528,62 @@ mod tests {
     }
 
     #[test]
-    fn move_within_group_stops_at_boundary() {
+    fn dragging_out_of_group_leaves_it_empty_but_alive() {
         let mut project = Project::new();
         let first = project.add_layer(layer("a"));
         let group = project.layers[first].group;
         project.add_layer_to_group(layer("b"), group);
         project.add_layer(layer("c"));
 
-        project.move_layer_up(0);
-        assert_eq!(names(&project), vec!["a", "b", "c"]);
+        let target = project.layers[2].group;
+        let moving: Vec<u64> = project.group_members(group).iter().map(|i| project.layers[*i].id).collect();
+        project.move_layers_to(&moving, DropTarget::GroupEnd(target));
 
-        project.move_layer_down(1);
-        assert_eq!(names(&project), vec!["a", "b", "c"]);
+        assert!(project.group(group).is_some());
+        assert!(project.group_block(group).is_none());
+        assert_eq!(project.group_members(target).len(), 3);
+        assert!(blocks_follow_group_order(&project));
+    }
 
-        project.move_layer_down(0);
-        assert_eq!(names(&project), vec!["b", "a", "c"]);
+    #[test]
+    fn group_flags_do_not_touch_members() {
+        let mut project = Project::new();
+        let a = project.add_layer(layer("a"));
+        let group = project.layers[a].group;
+        project.add_layer_to_group(layer("b"), group);
+
+        project.set_group_visible(group, false);
+        project.set_group_enabled(group, false);
+
+        assert!(!project.group_visible(group));
+        assert!(!project.group_enabled(group));
+        assert!(project.layers.iter().all(|l| l.is_visible && l.is_enabled));
+        assert!(project.layers.iter().all(|l| !project.layer_visible(l)));
+        assert!(project.layers.iter().all(|l| !project.layer_enabled(l)));
+
+        project.set_group_visible(group, true);
+        project.set_group_enabled(group, true);
+
+        assert!(project.layers.iter().all(|l| project.layer_visible(l)));
+        assert!(project.layers.iter().all(|l| project.layer_enabled(l)));
+    }
+
+    #[test]
+    fn member_flags_do_not_touch_group() {
+        let mut project = Project::new();
+        let a = project.add_layer(layer("a"));
+        let group = project.layers[a].group;
+        project.add_layer_to_group(layer("b"), group);
+
+        project.set_group_members_visible(group, false);
+
+        assert!(project.group_visible(group));
+        assert!(project.group_enabled(group));
+        assert!(project.layers.iter().all(|l| !l.is_visible));
+        assert!(project.layers.iter().all(|l| l.is_enabled));
+
+        project.set_group_members_visible(group, true);
+        assert!(project.layers.iter().all(|l| l.is_visible));
     }
 
     #[test]
@@ -519,6 +597,18 @@ mod tests {
         assert_eq!(project.groups.len(), 1);
         assert!(project.layers.iter().all(|l| l.group == project.groups[0].id));
         assert!(project.layers.iter().all(|l| l.id != 0));
+    }
+
+    #[test]
+    fn normalize_keeps_empty_groups() {
+        let mut project = Project::new();
+        project.add_layer(layer("a"));
+        let empty = project.create_group();
+
+        project.normalize();
+
+        assert!(project.group(empty).is_some());
+        assert!(project.group_block(empty).is_none());
     }
 
     #[test]
@@ -542,26 +632,12 @@ mod tests {
     }
 
     #[test]
-    fn group_toggle_visible_and_enabled_reaches_members() {
-        let mut project = Project::new();
-        let a = project.add_layer(layer("a"));
-        let group = project.layers[a].group;
-        project.add_layer_to_group(layer("b"), group);
-
-        project.set_group_visible(group, false);
-        project.set_group_enabled(group, false);
-
-        assert!(!project.group_visible(group));
-        assert!(!project.group_enabled(group));
-        assert!(project.layers.iter().all(|l| !l.is_visible && !l.is_enabled));
-    }
-
-    #[test]
     fn groups_survive_serialization() {
         let mut project = Project::new();
         project.add_layer(layer("a"));
         project.add_layer(layer("b"));
         project.rename_group(project.groups[0].id, "Engrave".to_string());
+        project.set_group_visible(project.groups[1].id, false);
 
         let text = toml::to_string(&project).unwrap();
         let mut restored: Project = toml::from_str(&text).unwrap();
@@ -571,6 +647,8 @@ mod tests {
         assert_eq!(restored.layers.len(), 2);
         assert_eq!(restored.layers[0].group, restored.groups[0].id);
         assert_eq!(restored.layers[1].group, restored.groups[1].id);
+        assert!(!restored.groups[1].visible);
+        assert!(restored.groups[0].visible);
     }
 
     #[test]

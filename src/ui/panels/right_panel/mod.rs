@@ -22,6 +22,13 @@ pub struct GroupRename {
     pub focus_requested: bool,
 }
 
+pub struct LayerRowDrag {
+    pub ids: Vec<u64>,
+    pub label: String,
+    pub origin: egui::Pos2,
+    pub active: bool,
+}
+
 pub struct RightPanelState {
     pub active_tab: RightPanelTab,
 
@@ -30,6 +37,8 @@ pub struct RightPanelState {
     pub position_edit_layer: Option<usize>,
 
     pub group_rename: Option<GroupRename>,
+
+    pub layer_drag: Option<LayerRowDrag>,
 }
 
 impl Default for RightPanelState {
@@ -38,6 +47,7 @@ impl Default for RightPanelState {
             active_tab: RightPanelTab::Layers,
             position_edit_layer: None,
             group_rename: None,
+            layer_drag: None,
         }
     }
 }
