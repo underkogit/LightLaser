@@ -333,11 +333,11 @@ pub fn traced_paths_to_gcode(
     origin: (f64, f64),
     scale_x: f64,
     scale_y: f64,
+    spindle_max: f64,
 ) -> Vec<crate::core::gcode::GcodeCommand> {
     use crate::core::gcode::GcodeCommand;
 
-    let s_max = 1000.0;
-    let s_on = ((params.power_percent.clamp(0.0, 100.0) / 100.0) * s_max).round();
+    let s_on = params.spindle_value(spindle_max);
 
     let mut cmds = Vec::new();
     let mk = |raw: String| GcodeCommand {

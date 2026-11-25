@@ -26,6 +26,13 @@ impl fmt::Display for GrblError {
 
 impl std::error::Error for GrblError {}
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GrblSettings {
+    pub work_area: Option<(f64, f64)>,
+    pub spindle_max: Option<f64>,
+    pub laser_mode: Option<bool>,
+}
+
 impl From<serialport::Error> for GrblError {
     fn from(e: serialport::Error) -> Self {
         GrblError::Serial(e)
@@ -105,13 +112,15 @@ impl GrblConnection {
         Ok(Self { conn })
     }
 
-    pub fn fetch_work_area(&mut self) -> Result<Option<(f64, f64)>, GrblError> {
+    pub fn fetch_settings(&mut self) -> Result<GrblSettings, GrblError> {
         while let Ok(Some(_)) = self.conn.read_line() {}
 
         self.conn.write_line("$$")?;
 
         let mut max_x: Option<f64> = None;
         let mut max_y: Option<f64> = None;
+        let mut spindle_max: Option<f64> = None;
+        let mut laser_mode: Option<bool> = None;
         let timeout = Instant::now() + Duration::from_secs(3);
 
         while Instant::now() < timeout {
@@ -127,6 +136,8 @@ impl GrblConnection {
                         match key {
                             "$130" => max_x = val.parse::<f64>().ok(),
                             "$131" => max_y = val.parse::<f64>().ok(),
+                            "$30" => spindle_max = val.parse::<f64>().ok(),
+                            "$32" => laser_mode = val.parse::<f64>().ok().map(|v| v != 0.0),
                             _ => {}
                         }
                     }
@@ -137,13 +148,16 @@ impl GrblConnection {
             }
         }
 
-        if let (Some(x), Some(y)) = (max_x, max_y) {
-            if x > 0.0 && y > 0.0 {
-                return Ok(Some((x, y)));
-            }
-        }
+        let work_area = match (max_x, max_y) {
+            (Some(x), Some(y)) if x > 0.0 && y > 0.0 => Some((x, y)),
+            _ => None,
+        };
 
-        Ok(None)
+        Ok(GrblSettings {
+            work_area,
+            spindle_max: spindle_max.filter(|value| *value > 0.0),
+            laser_mode,
+        })
     }
 
     pub fn send_and_wait_ok(&mut self, line: &str) -> Result<(), GrblError> {
@@ -234,7 +248,7 @@ pub enum GrblEvent {
     Connected,
     Disconnected,
     Status(GrblStatus),
-    WorkArea(f64, f64),
+    Settings(GrblSettings),
     Ok,
     Error(String),
     Alarm(String),

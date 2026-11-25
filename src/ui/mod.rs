@@ -47,6 +47,7 @@ pub struct LaserApp {
 
     pub(crate) streamer: Streamer,
     pub(crate) grbl_status: Option<GrblStatus>,
+    pub(crate) grbl_laser_mode: Option<bool>,
     pub(crate) streamer_state: StreamerState,
     pub(crate) events_rx: Receiver<GrblEvent>,
     pub(crate) events_tx: Sender<GrblEvent>,
@@ -87,6 +88,7 @@ impl LaserApp {
             right_panel_state: RightPanelState::default(),
             streamer,
             grbl_status: None,
+            grbl_laser_mode: None,
             streamer_state: StreamerState::Idle,
             events_rx,
             events_tx,
@@ -137,11 +139,17 @@ impl LaserApp {
                 GrblEvent::Disconnected => {
                     log::info!("{}", t!("comm.info.disconnected"));
                     self.grbl_status = None;
+                    self.grbl_laser_mode = None;
                 }
-                GrblEvent::WorkArea(w, h) => {
-                    log::info!("Work area from controller: {:.1} x {:.1} mm", w, h);
-                    self.project.machine.work_area_mm = (w, h);
-                    self.center_view();
+                GrblEvent::Settings(settings) => {
+                    if let Some((w, h)) = settings.work_area {
+                        self.project.machine.work_area_mm = (w, h);
+                        self.center_view();
+                    }
+                    if let Some(spindle) = settings.spindle_max {
+                        self.project.machine.spindle_max = spindle;
+                    }
+                    self.grbl_laser_mode = settings.laser_mode;
                 }
                 GrblEvent::Status(st) => {
                     self.grbl_status = Some(st);

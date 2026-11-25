@@ -12,7 +12,7 @@ canvas, then streams the resulting G-code to a GRBL-based laser controller over 
 **Editor**
 
 - Canvas-based editor with zoom, pan, grid, axes, and a work-area outline.
-- Layers: image, SVG, G-code, Gerber, and vector. Every layer has a colour, a name, a
+- Layers: image, SVG, G-code, Gerber, and vector. Every layer has a name, a
   visibility flag (canvas) and an enabled flag (jobs and exports).
 - Layer groups: every layer lives in a group. A group is a contiguous block of layers, so the
   order shown in the panel is the engraving order. Layers are indented under their group. A
@@ -77,7 +77,9 @@ cargo test
 ```
 
 The suite currently covers G-code line parsing, SVG size parsing, the layer group invariants,
-and the layer panel's drop-target geometry (35 tests pass, 1 ignored performance benchmark).
+the job builder (every layer of a group emits its own laser command, single-pixel features keep
+a non-zero cut, laser mode off switches `M4` to `M3`), and the layer panel's drop-target geometry
+(44 tests pass, 1 ignored performance benchmark).
 `cargo check --all-targets` also reports the current list of dead-code warnings; see
 [REFACTOR_REPORT.md](REFACTOR_REPORT.md).
 
@@ -150,9 +152,9 @@ Projects are TOML documents containing:
 - The project version (currently `1`) and name.
 - Machine configuration: port, baud rate, work area, jog step, jog feed, and how many times
   the whole job runs.
-- Layer groups in panel order, each with the group name, colour, collapsed state, and its own
+- Layer groups in panel order, each with the group name, collapsed state, and its own
   visibility and enabled switches. Empty groups are kept.
-- Layers with source type, colour, visibility, enabled state, parameters, bounds, vector
+- Layers with source type, visibility, enabled state, parameters, bounds, vector
   shapes, offset, and mirror settings. Each layer carries a stable `id`, the `group` it
   belongs to, and its position in the list is its engraving order.
 
@@ -198,6 +200,29 @@ Both files currently hold the same 151 keys. At runtime they are read from `<exe
 
 On macOS, `Ctrl` means `Cmd` where the platform uses it.
 
+## Laser does not mark
+
+Every job layer starts with `M4 S…` (dynamic power) or `M3 S…` (constant power), so a job that
+runs but leaves no marks is usually a controller or material setting. Check in this order:
+
+1. Laser mode: `$32` must be `1`. The machine panel shows what the controller reported. With
+   laser mode off GRBL treats `M4` as spindle CCW, ignores dynamic power, and keeps the laser on
+   during travel moves.
+2. Full scale: power percentages are mapped onto `$30`, also shown in the machine panel. If the
+   controller reports a much larger `$30` than 1000, an `S` value that looks large in the G-code
+   can still be a fraction of a percent of PWM duty.
+3. Material and feed: 10–20 % of a diode module often leaves no visible mark at 1000 mm/min.
+   Run a power ramp on scrap first.
+4. The raster: a raster layer only burns where the threshold (or `Invert`) marks pixels dark, so
+   an all-light raster produces a job with no moves for that layer.
+5. One layer of a group engraves and the next one only travels: press `Start` and read the
+   console. The job logs one line per layer with its percentage, `S`, feed rate, passes, move
+   count, total cut length, and an energy figure (`power / feed`). A layer whose energy is much
+   lower than the working one will not mark, and a layer reported with `nothing to cut` has a
+   toolpath that collapsed to points (all-light raster, empty vector layer). Between the layers
+   only the layer's own power, feed, and passes differ; the G-code shape of a group is otherwise
+   the same for every member.
+
 ## Known limitations
 
 - The theme selector is stored but not applied; the interface uses the default egui visuals.
@@ -206,20 +231,21 @@ On macOS, `Ctrl` means `Cmd` where the platform uses it.
 - Undo covers canvas edits, layer position edits, and the layer list: dragging a layer onto
   another group or another layer inside one group, deleting a layer or a group, renaming a
   group, creating a group, hiding or showing the layers of a group from its menu, and the
-  group visibility/enabled switches. Parameter changes (power, feed, name, colour),
+  group visibility/enabled switches. Parameter changes (power, feed, name),
   per-layer visibility/enabled toggles, and collapsing a group are not undoable.
 - A hidden but enabled layer is not drawn on the canvas or in the preview, yet it is included
   in jobs and exports. The group switches are separate: a hidden group also hides its layers
   from jobs and exports, and the per-layer checkboxes keep their own state.
-- A group's colour is taken from the first layer that moves into it and cannot be edited.
-  Groups are listed in the order they were created; there is no way to reorder groups as a
+- Groups are listed in the order they were created; there is no way to reorder groups as a
   whole, and a layer can only be placed inside an existing group.
 - Imported G-code is re-emitted as `G0`/`G1` moves with the layer's power and feed: arcs
   become straight lines, relative coordinates are not supported, and `S`, `M3`/`M4`, and `Z`
   from the source are dropped.
 - Work position, feed, and spindle are parsed from status reports but only the machine
   position is shown in the interface.
-- The machine configuration does not store laser mode, soft limits, or homing settings.
+- Laser mode (`$32`) and the full-scale S value (`$30`) are read from the controller when it
+  connects and shown under the machine controls. The project stores the last `$30` so exports
+  without a connection still scale correctly. Soft limits and homing settings are not handled.
 - The work area comes from the controller (`$130`/`$131`) or defaults to 300 × 300 mm; it is
   not editable in the settings window.
 - `config/` next to the executable must be writable; an installation in a protected

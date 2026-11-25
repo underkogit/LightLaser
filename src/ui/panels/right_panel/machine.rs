@@ -178,5 +178,25 @@ impl LaserApp {
                 .range(1..=100),
         )
         .on_hover_text(t!("ui.tip.machine_passes").to_string());
+
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(format!(
+                "{} {:.0} · {}",
+                t!("ui.label.spindle_max"),
+                self.project.machine.spindle_max,
+                laser_mode_label(self.grbl_laser_mode)
+            ))
+            .weak(),
+        )
+        .on_hover_text(t!("ui.tip.machine_scale").to_string());
+    }
+}
+
+fn laser_mode_label(mode: Option<bool>) -> String {
+    match mode {
+        Some(true) => t!("ui.machine.laser_on").to_string(),
+        Some(false) => t!("ui.machine.laser_off").to_string(),
+        None => t!("ui.machine.laser_untold").to_string(),
     }
 }

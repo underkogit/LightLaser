@@ -24,6 +24,7 @@ pub fn export_vector_layer(
     layer: &Layer,
     params: &LayerParams,
     origin: (f64, f64),
+    spindle_max: f64,
 ) -> Result<Vec<GcodeCommand>, VectorExportError> {
     if layer.shapes.is_empty() {
         return Err(VectorExportError::EmptyLayer);
@@ -35,8 +36,7 @@ pub fn export_vector_layer(
         ));
     }
 
-    let s_max = 1000.0;
-    let s_on = ((params.power_percent.clamp(0.0, 100.0) / 100.0) * s_max).round();
+    let s_on = params.spindle_value(spindle_max);
 
     let mut cmds: Vec<GcodeCommand> = Vec::new();
 

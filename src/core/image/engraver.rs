@@ -83,12 +83,7 @@ pub fn engrave_segments(
                         } else {
                             (end_col, start_col)
                         };
-                        segs.push(EngraveSegment {
-                            x0: origin_x + (lo as f64) * step_x,
-                            y0: y,
-                            x1: origin_x + (hi as f64) * step_x,
-                            y1: y,
-                        });
+                        segs.push(run_segment(origin_x, y, lo, hi, step_x));
                         run_start = None;
                         last_col = None;
                     }
@@ -102,12 +97,7 @@ pub fn engrave_segments(
                 } else {
                     (end_col, start_col)
                 };
-                segs.push(EngraveSegment {
-                    x0: origin_x + (lo as f64) * step_x,
-                    y0: y,
-                    x1: origin_x + (hi as f64) * step_x,
-                    y1: y,
-                });
+                segs.push(run_segment(origin_x, y, lo, hi, step_x));
             }
         }
     }
@@ -115,16 +105,34 @@ pub fn engrave_segments(
     Ok(segs)
 }
 
+/// A dark run that is a single pixel wide would turn into a zero length move, and a zero
+/// length move never fires the laser in laser mode. It is widened to one pixel of travel.
+fn run_segment(origin_x: f64, y: f64, lo: u32, hi: u32, step_x: f64) -> EngraveSegment {
+    let x0 = origin_x + (lo as f64) * step_x;
+    let mut x1 = origin_x + (hi as f64) * step_x;
+
+    if (x1 - x0).abs() < step_x * 0.5 {
+        x1 = x0 + step_x;
+    }
+
+    EngraveSegment {
+        x0,
+        y0: y,
+        x1,
+        y1: y,
+    }
+}
+
 pub fn engrave_layer(
     raster: &RasterImage,
     params: &LayerParams,
     origin: (f64, f64),
+    spindle_max: f64,
 ) -> Result<Vec<GcodeCommand>, EngraveError> {
     let segs = engrave_segments(raster, params, origin)?;
 
     let feed = params.feed_rate;
-    let s_max = 1000.0;
-    let s_on = ((params.power_percent.clamp(0.0, 100.0) / 100.0) * s_max).round();
+    let s_on = params.spindle_value(spindle_max);
 
     let laser_on_cmd = if params.dynamic_power {
         format!("M4 S{:.0}", s_on)
@@ -167,5 +175,51 @@ fn make_cmd(raw: String) -> GcodeCommand {
         feed: None,
         spindle: None,
         comment: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::layer::LayerParams;
+
+    fn dark_raster() -> RasterImage {
+        RasterImage {
+            px_width: 4,
+            px_height: 1,
+            width_mm: 1.0,
+            height_mm: 1.0,
+            pixels: image::GrayImage::new(4, 1),
+            threshold: 128,
+            invert: false,
+        }
+    }
+
+    fn laser_command(cmds: &[GcodeCommand]) -> String {
+        cmds.iter()
+            .map(|c| c.raw.clone())
+            .find(|raw| raw.starts_with("M3") || raw.starts_with("M4"))
+            .expect("job carries a laser command")
+    }
+
+    #[test]
+    fn power_is_mapped_onto_the_controller_full_scale() {
+        let mut params = LayerParams::default();
+        params.power_percent = 25.0;
+
+        let grbl = engrave_layer(&dark_raster(), &params, (0.0, 0.0), 1000.0).unwrap();
+        assert_eq!(laser_command(&grbl), "M4 S250");
+
+        let scaled = engrave_layer(&dark_raster(), &params, (0.0, 0.0), 4000.0).unwrap();
+        assert_eq!(laser_command(&scaled), "M4 S1000");
+    }
+
+    #[test]
+    fn constant_power_emits_m3() {
+        let mut params = LayerParams::default();
+        params.dynamic_power = false;
+
+        let cmds = engrave_layer(&dark_raster(), &params, (0.0, 0.0), 1000.0).unwrap();
+        assert_eq!(laser_command(&cmds), "M3 S500");
     }
 }

@@ -9,16 +9,16 @@ structure. [REFACTOR_REPORT.md](REFACTOR_REPORT.md) covers structural debt and a
 | Item | Value |
 | --- | --- |
 | Language, edition | Rust 2024, binary crate (no `lib` target) |
-| Size | 78 files, 11,902 lines under `src/` |
+| Size | 82 files, 13,828 lines under `src/` |
 | UI | `eframe` / `egui` 0.36, `egui_extras` image loaders, `egui-phosphor` icons |
 | Hardware | `serialport` → GRBL-compatible controller |
 | Imports | `image`, `resvg` + `tiny-skia`, `gerber_parser` + `clipper2` + `evalexpr` |
 | Persistence | `serde` + `toml` (projects and app config), flat TOML locales |
 | Threads | 2: eframe UI thread and one streamer thread |
-| Baseline | `cargo test`: 13 passed, 1 ignored; `cargo check --all-targets`: 53 warnings |
+| Baseline | `cargo test`: 44 passed, 1 ignored |
 
-Area split by lines: `ui` 6,682 (56%), `core` 4,264 (36%), `comm` 748 (6%), app entry
-points 208 (2%). The three largest files are `core/image/gerber.rs` (832),
+Area split by lines: `ui` 7,154 (52%), `core` 5,678 (41%), `comm` 788 (6%), app entry
+points 208 (1%). The three largest files are `core/image/gerber.rs` (832),
 `ui/widget/preview_window.rs` (753), and `ui/panels/canvas/input.rs` (700).
 
 ## Runtime topology
@@ -70,19 +70,20 @@ points 208 (2%). The three largest files are `core/image/gerber.rs` (832),
 | `src/i18n_backend.rs` | `rust-i18n` backend that loads `locales/<code>.toml` next to the executable |
 | `build.rs` | Copies `locales/*` into `target/<profile>/locales` |
 
-### `src/comm` — controller link (748 lines)
+### `src/comm` — controller link (788 lines)
 
 | Path | Responsibility |
 | --- | --- |
-| `comm/grbl.rs` | `GrblConnection`: handshake, `$130`/`$131` work area, `send_and_wait_ok`, jog, home, unlock, feed hold, cycle start, soft reset; `GrblEvent` definition |
+| `comm/grbl.rs` | `GrblConnection`: handshake, `$$` settings (`$130`/`$131` work area, `$30` full-scale S, `$32` laser mode), `send_and_wait_ok`, jog, home, unlock, feed hold, cycle start, soft reset; `GrblEvent` and `GrblSettings` definitions |
 | `comm/serial.rs` | `SerialConnection`: port open (DTR/RTS pulse), line-oriented read with 100 ms timeout, raw writes |
 | `comm/status.rs` | `GrblStatus::parse` for `<State|MPos:…|WPos:…|FS:…>` reports |
 | `comm/streamer.rs` | `Streamer` thread: command loop, 120-byte RX window, `ok` accounting, abort on `error:`/`ALARM:`, stall recovery, 250 ms status polling |
 
-### `src/core` — domain model and job generation (4,264 lines)
+### `src/core` — domain model and job generation (5,678 lines)
 
 | Path | Responsibility |
 | --- | --- |
+| `core/job.rs` | `build_job(project, spindle_max, laser_mode)` → `(Vec<String>, Vec<LayerReport>)`: the whole document as one G-code program plus a per-layer diagnostic (power, feed, moves, cut length); the segment builder for `Gcode`/`Gerber` sources lives here too |
 | `core/layer/project.rs` | `Project` (`version`, `name`, `layers`, `groups`, `machine`); `PROJECT_VERSION = 1`; group and layer ordering, id allocation, `normalize` |
 | `core/layer/group.rs` | `LayerGroup` (id, name, colour, collapsed, `visible`, `enabled`), `GroupId`, `DropTarget` |
 | `core/layer/layer.rs` | `Layer` (with stable `id` and `group`), `LayerParams`, `LayerSource`, `VectorShape`, `EngraveMode`, `LayerUnit`; bounds and translate helpers |
@@ -104,7 +105,7 @@ points 208 (2%). The three largest files are `core/image/gerber.rs` (832),
 | `core/image/palette.rs` | Palette extraction (unused) |
 | `core/bounding_box.rs` | `BoundingBox` accumulator used for fit-to-view |
 
-### `src/ui` — application shell (6,594 lines)
+### `src/ui` — application shell (7,154 lines)
 
 | Path | Responsibility |
 | --- | --- |
@@ -127,7 +128,7 @@ points 208 (2%). The three largest files are `core/image/gerber.rs` (832),
 Project
 ├── version: u32            (currently 1)
 ├── name: String
-├── machine: MachineConfig  (port, baudrate, work_area_mm, jog_feed, jog_step, passes)
+├── machine: MachineConfig  (port, baudrate, work_area_mm, jog_feed, jog_step, spindle_max, passes)
 ├── groups: Vec<LayerGroup>  order = panel order
 │   ├── id: GroupId (u64)
 │   ├── name: String
@@ -169,9 +170,11 @@ Layer sources split into two families:
 
 * **Raster-backed** (`Image`, `Svg` in raster mode): the source is a file, the layer's
   `bounds` are authoritative for placement and size; `offset` is not used when drawing.
-* **Segment-backed** (`Gcode`, `Gerber`, `Vector`, `Svg` in lines mode): geometry is
-  generated from the file or from `shapes`; `bounds` describes the world extent, and
-  `offset` is applied on top when drawing and when emitting G-code.
+* **Segment-backed** (`Gcode`, `Gerber`, `Svg` in lines mode): geometry is generated from the
+  file; `bounds` describes the world extent, and `offset` is applied on top when drawing and
+  when emitting G-code.
+* **Vector**: the node coordinates themselves are the world geometry, so `shapes` are drawn
+  and emitted as they are and `offset` is ignored; `Layer::translate` moves the nodes.
 
 Other long-lived UI state: `CanvasState` (zoom, pan, drag mode, texture/segment caches,
 preview and G-code windows), `Selection` (layer/shape/node/handle indices), `History`,
@@ -187,9 +190,10 @@ preview and G-code windows), `Selection` (layer/shape/node/handle indices), `His
 * The display grid step is independent (`AppConfig::grid_step_mm`), and the work area comes
   from `MachineConfig::work_area_mm` (controller `$130`/`$131`, default 300 × 300).
 
-## Job build pipeline (`ui/widget/job.rs`)
+## Job build pipeline (`core/job.rs`, called from `ui/widget/job.rs`)
 
-1. `start_job` calls `build_job_gcode`; the result is a `Vec<String>` of raw G-code lines.
+1. `start_job` calls `core::job::build_job(&project, machine.spindle_max, grbl_laser_mode)`;
+   it returns the G-code lines plus one `LayerReport` per emitted layer.
 2. Header: `G21`, `G90`, `G17`.
 3. Outer loop over `machine.passes` repeats the whole job.
 4. For each layer whose `Project::layer_enabled` is true (visibility is ignored here), compute
@@ -199,13 +203,25 @@ preview and G-code windows), `Selection` (layer/shape/node/handle indices), `His
      `trace_image_to_paths(128)` → `traced_paths_to_gcode` with X/Y scale factors.
    * `Svg`, raster mode → `svg_raster_box` (64–4096 px) → `rasterize_svg_into_box` →
      `rasterize` → `engrave_layer`.
-   * `Gcode` → read text → segment parser in this file → mirror → normalize to min → `G0`/`G1`.
+   * `Gcode` → read text → segment parser in `core/job.rs` → mirror → normalize to min → `G0`/`G1`.
    * `Gerber` → `parse_gerber_segments` → `chain_segments` into polylines → `G0`/`G1`.
    * `Vector` → `export_vector_layer` → flatten at 0.05 mm → `G0`/`G1`.
 5. After each layer: `M5`. After the job: `G0 X0 Y0`, `M5`.
-6. `StreamerCommand::Start { lines }` hands the lines to the streamer thread.
+6. If the controller reported `$32=0`, every `M4` is rewritten to `M3`: without laser mode the
+   blade of dynamic power does nothing and `M3` (spindle CW) is the command that actually
+   switches a diode module on.
+7. `StreamerCommand::Start { lines }` hands the lines to the streamer thread.
 
-Laser power is always mapped to `S0..S1000` with `M4` (dynamic) or `M3` (constant).
+`LayerReport` (`index`, `name`, `kind`, `laser_power`, `power_percent`, `feed_rate`, `passes`,
+`moves`, `cut_length`) is logged once per job, so a layer that would not burn can be recognised
+from the console alone: `is_silent()` is true when a layer emits no moves or only zero length
+ones, and the log prints the percentage, `S`, feed rate and an energy figure
+(`power_percent / feed_rate`) that makes two layers of one group comparable at a glance.
+
+Laser power is a percentage mapped onto the controller's full-scale S value: `$30` is fetched with
+the rest of the settings when the controller connects and stored in `machine.spindle_max`
+(default 1000, which is the GRBL default). `LayerParams::spindle_value` performs that mapping, so
+`M4`/`M3` carry `S` in the controller's own range instead of a fixed `S0..S1000`.
 `export_job_gcode` uses the same builder and joins the lines with `\n`; the export dialog
 and the G-code viewer both call it.
 
@@ -264,7 +280,7 @@ processed prefix of the segment list.
 | Add an imported file type | `LayerSource` and `Layer::is_raster` (`core/layer/layer.rs`); `ui/project_io.rs`; drag-and-drop match in `ui/mod.rs`; import menu in `ui/panels/top_bar.rs`; builder branch in `ui/widget/job.rs`; `cache.rs` and `preview_window.rs` |
 | Add a layer parameter | `LayerParams` (`core/layer/layer.rs`), properties UI (`right_panel/properties.rs`), the parameter application block there, and any consumer (`engraver.rs`, `vector_gcode.rs`, `job.rs`) |
 | Add a drawing tool | `core/tools/<name>.rs` + `ToolKind`/icon/tooltip in `core/tools/tool.rs` + `ToolsState` (`ui/tools_state.rs`) + input dispatch (`canvas/input.rs`) |
-| Change emitted G-code for a source | `ui/widget/job.rs` for live jobs; `core/image/engraver.rs`, `core/vector_gcode.rs`, `core/image/svg_trace.rs` for the source generators |
+| Change emitted G-code for a source | `core/job.rs` for how a layer is placed and emitted; `core/image/engraver.rs`, `core/vector_gcode.rs`, `core/image/svg_trace.rs` for the source generators |
 | Change what the canvas shows | `ui/panels/canvas/draw.rs`; segment generation in `canvas/cache.rs` |
 | Add a UI string | `locales/en.toml` and `locales/ru.toml` (keep keys identical), then `t!("…")` at the call site |
 | Add an app setting | `ui/app_config.rs` field + default + settings UI (`widget/settings_window.rs`), then read it from `LaserApp` |
@@ -294,7 +310,15 @@ processed prefix of the segment list.
 * There are three independent segment builders (live job, canvas cache, preview). They must
   produce the same geometry for the same layer; today they do not in all cases.
 * A layer carries world position in `bounds`, `offset`, and (for vector layers) node
-  coordinates at once. `Layer::translate` updates all three.
+  coordinates at once. `Layer::translate` updates all three. The job builder places raster and
+  segment layers by `bounds`, segment layers also add `offset`, and vector layers use the node
+  coordinates alone (`core::job::layer_origin`), which is what the canvas draws.
+* A zero length `G1` never fires the laser in laser mode, because GRBL only energises while
+  moving. `engrave_segments` widens a single-pixel dark run to one pixel of travel for that
+  reason, and `LayerReport::is_silent` flags a layer whose whole toolpath collapsed to points.
+* `$32=0` (no laser mode) makes GRBL interpret `M4` as "spindle CCW, dynamic power off"; a diode
+  module wired to the direction pin then stays dark, so the job builder rewrites `M4` to `M3`
+  when the controller reports laser mode off.
 * `GcodeCommand` stores parsed fields, but downstream code only reads `raw`.
 * Passes exist at three levels: `machine.passes` (whole job), `layer.params.passes`
   (source generator), and per-source comment blocks.

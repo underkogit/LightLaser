@@ -94,6 +94,13 @@ impl Default for LayerParams {
     }
 }
 
+impl LayerParams {
+    pub fn spindle_value(&self, spindle_max: f64) -> f64 {
+        let scale = if spindle_max > 0.0 { spindle_max } else { 1000.0 };
+        ((self.power_percent.clamp(0.0, 100.0) / 100.0) * scale).round()
+    }
+}
+
 fn default_power() -> f64 {
     50.0
 }

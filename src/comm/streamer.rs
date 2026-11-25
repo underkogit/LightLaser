@@ -91,11 +91,37 @@ fn run_loop(cmd_rx: Receiver<StreamerCommand>, events_tx: Sender<GrblEvent>) {
                     let _ = events_tx.send(GrblEvent::Error(format!("Connecting to {}...", port)));
                     match GrblConnection::open(&port, baudrate) {
                         Ok(mut conn) => {
-                            if let Ok(Some((w, h))) = conn.fetch_work_area() {
-                                log::info!("Work area from controller: {:.1} x {:.1} mm", w, h);
-                                let _ = events_tx.send(GrblEvent::WorkArea(w, h));
-                            } else {
-                                log::warn!("Failed to retrieve work area from controller");
+                            match conn.fetch_settings() {
+                                Ok(settings) => {
+                                    if let Some((w, h)) = settings.work_area {
+                                        log::info!(
+                                            "Work area from controller: {:.1} x {:.1} mm",
+                                            w,
+                                            h
+                                        );
+                                    } else {
+                                        log::warn!("Failed to retrieve work area from controller");
+                                    }
+                                    if let Some(spindle) = settings.spindle_max {
+                                        log::info!(
+                                            "Full-scale S from controller: $30={:.0}",
+                                            spindle
+                                        );
+                                    } else {
+                                        log::warn!(
+                                            "Controller did not report $30; assuming full-scale S 1000"
+                                        );
+                                    }
+                                    match settings.laser_mode {
+                                        Some(true) => log::info!("Laser mode is on ($32=1)"),
+                                        Some(false) => log::warn!(
+                                            "Laser mode is off ($32=0): travel moves keep the laser on and M4 dynamic power is ignored"
+                                        ),
+                                        None => log::warn!("Controller did not report $32"),
+                                    }
+                                    let _ = events_tx.send(GrblEvent::Settings(settings));
+                                }
+                                Err(e) => log::warn!("Failed to read controller settings: {}", e),
                             }
                             grbl = Some(conn);
                             let _ = events_tx.send(GrblEvent::Connected);
